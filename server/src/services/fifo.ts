@@ -38,6 +38,19 @@ export interface RealizationDetail {
   currency: string;
 }
 
+export interface ManualPositionResult {
+  current_value: number;
+  /** Actual cash deposited:
+   *  - pension  → monthly_deposit × whole months elapsed since first UPDATE
+   *  - education / other → SUM of DEPOSIT transaction amounts
+   */
+  net_deposited: number;
+  unrealized_pl: number;        // current_value − net_deposited
+  currency: string;             // currency of the latest UPDATE transaction
+  last_update_at: string | null;
+  update_count: number;         // number of UPDATE (snapshot) transactions
+}
+
 interface TxRow {
   id: number;
   kind: string;
@@ -48,9 +61,16 @@ interface TxRow {
   occurred_at: string;
 }
 
+interface UpdateRow {
+  id: number;
+  total_amount: number;
+  currency: string;
+  occurred_at: string;
+}
+
 const EPSILON = 1e-10;
 
-// ── Core algorithm (operates on raw transaction rows) ─────────────────────────
+// ── Core FIFO algorithm ───────────────────────────────────────────────────────
 
 function runFifo(txs: TxRow[]): {
   lots: FifoLot[];
@@ -89,7 +109,7 @@ function runFifo(txs: TxRow[]): {
 
       realized.push({ sell_tx_id: tx.id, realized_pl: realizedThisSell, currency: tx.currency });
     }
-    // DIV and UPDATE are ignored by FIFO — they don't affect lot queue
+    // DIV, UPDATE, DEPOSIT: ignored by FIFO
   }
 
   return { lots, realized, currency };
@@ -161,7 +181,6 @@ export function recomputeRealized(
   });
   recomputeTx();
 
-  // Return remaining units so caller can set/clear closed_at
   const remaining = lots.reduce((s, l) => s + l.units_remaining, 0);
   const isClosed = remaining < EPSILON;
 
@@ -175,31 +194,37 @@ export function recomputeRealized(
   return realized;
 }
 
-// ── Pension / Education / Other helpers ───────────────────────────────────────
+// ── Pension / Education / Other position ──────────────────────────────────────
 
-interface UpdateRow {
-  id: number;
-  total_amount: number;
-  currency: string;
-  occurred_at: string;
+/**
+ * Investment metadata needed to compute the manual position.
+ * Matches columns in the investments table.
+ */
+export interface ManualInvMeta {
+  type: string;
+  /** Expected monthly contribution in deposit_currency (pension only). */
+  monthly_deposit?: number | null;
 }
 
 /**
- * For non-market investments (pension / education / other):
- * current value = latest UPDATE transaction total_amount.
- * "Unrealized P/L" = latest_total - first_total (growth from initial balance).
- * Net deposited = 0 (balance changes are NOT deposits).
+ * Compute the position for a non-market investment.
+ *
+ * PENSION model:
+ *   net_deposited = monthly_deposit × whole calendar months elapsed
+ *                   since the earliest UPDATE transaction.
+ *   unrealized_pl = current_value − net_deposited.
+ *   If monthly_deposit is null / 0, net_deposited = 0.
+ *
+ * EDUCATION / OTHER model:
+ *   net_deposited = SUM of all DEPOSIT transaction amounts.
+ *   current_value = latest UPDATE total_amount.
+ *   unrealized_pl = current_value − net_deposited.
  */
 export function computeManualPosition(
   db: Database.Database,
-  investmentId: number
-): {
-  current_value: number;
-  unrealized_pl: number;
-  currency: string;
-  last_update_at: string | null;
-  update_count: number;
-} {
+  investmentId: number,
+  inv: ManualInvMeta
+): ManualPositionResult {
   const updates = db
     .prepare<[number], UpdateRow>(
       `SELECT id, total_amount, currency, occurred_at
@@ -210,15 +235,55 @@ export function computeManualPosition(
     .all(investmentId);
 
   if (updates.length === 0) {
-    return { current_value: 0, unrealized_pl: 0, currency: "NIS", last_update_at: null, update_count: 0 };
+    return {
+      current_value: 0,
+      net_deposited: 0,
+      unrealized_pl: 0,
+      currency: "NIS",
+      last_update_at: null,
+      update_count: 0,
+    };
   }
 
   const first = updates[0];
-  const last = updates[updates.length - 1];
+  const last  = updates[updates.length - 1];
+  const current_value = last.total_amount;
+  const currency      = last.currency;
+
+  let net_deposited: number;
+
+  if (inv.type === "pension") {
+    // Whole calendar months from earliest UPDATE to today
+    const monthly = inv.monthly_deposit ?? 0;
+    if (monthly > 0) {
+      const firstDate = new Date(first.occurred_at);
+      const now = new Date();
+      const months = Math.max(
+        0,
+        (now.getFullYear() - firstDate.getFullYear()) * 12
+          + (now.getMonth() - firstDate.getMonth())
+      );
+      net_deposited = monthly * months;
+    } else {
+      net_deposited = 0;
+    }
+  } else {
+    // Education / Other: sum actual DEPOSIT transactions
+    const row = db
+      .prepare<[number], { total: number | null }>(
+        `SELECT SUM(total_amount) AS total
+         FROM transactions
+         WHERE investment_id = ? AND kind = 'DEPOSIT'`
+      )
+      .get(investmentId);
+    net_deposited = row?.total ?? 0;
+  }
+
   return {
-    current_value: last.total_amount,
-    unrealized_pl: last.total_amount - first.total_amount,
-    currency: last.currency,
+    current_value,
+    net_deposited,
+    unrealized_pl: current_value - net_deposited,
+    currency,
     last_update_at: last.occurred_at,
     update_count: updates.length,
   };

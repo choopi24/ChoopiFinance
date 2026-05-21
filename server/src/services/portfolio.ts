@@ -53,6 +53,8 @@ interface InvRow {
   liquid_date: string | null;
   closed_at: string | null;
   deleted_at: string | null;
+  monthly_deposit: number | null;
+  deposit_currency: string;
   created_at: string;
 }
 
@@ -70,10 +72,19 @@ export interface EnrichedInvestment {
   liquid_date: string | null;
   closed_at: string | null;
   created_at: string;
+  monthly_deposit: number | null;
+  deposit_currency: string;
 
   // Position
   remaining_units: number;
+  /**
+   * For market types: FIFO cost basis of remaining lots.
+   * For manual types: net amount deposited (monthly_deposit model or DEPOSIT sum).
+   * Used for portfolio total_net_deposited_nis.
+   */
   cost_basis_nis: number;
+  /** Alias of cost_basis_nis surfaced explicitly for the client. */
+  net_deposited_nis: number;
   current_value_nis: number;
   current_price: number | null;
   current_price_currency: string | null;
@@ -126,12 +137,15 @@ export function enrichInvestment(
   if (isMarket) {
     const pos = computePosition(db, inv.id);
 
-    // Try to get a live/cached price for current_value
-    const priceRow = db
-      .prepare<[string, string], PriceRow>(
-        "SELECT price, currency, fetched_at FROM price_cache WHERE symbol = ? AND asset_type = ?"
-      )
-      .get(inv.ticker ?? "", inv.type) as PriceRow | undefined;
+    // Defensive UPPERCASE before price_cache lookup (FIX 1: ticker casing)
+    const symbol = (inv.ticker ?? "").toUpperCase();
+    const priceRow = symbol
+      ? (db
+          .prepare<[string, string], PriceRow>(
+            "SELECT price, currency, fetched_at FROM price_cache WHERE symbol = ? AND asset_type = ?"
+          )
+          .get(symbol, inv.type) as PriceRow | undefined)
+      : undefined;
 
     const current_price = priceRow?.price ?? null;
     const priceCurrency = priceRow?.currency ?? pos.currency;
@@ -152,6 +166,7 @@ export function enrichInvestment(
       ...inv,
       remaining_units: pos.remaining_units,
       cost_basis_nis,
+      net_deposited_nis: cost_basis_nis,
       current_value_nis,
       current_price,
       current_price_currency: priceCurrency,
@@ -168,23 +183,31 @@ export function enrichInvestment(
       fx_source: fx.source,
     };
   } else {
-    // Pension / Education / Other
-    const man = computeManualPosition(db, inv.id);
+    // Pension / Education / Other — FIX 3: use real net_deposited, not 0
+    const man = computeManualPosition(db, inv.id, {
+      type: inv.type,
+      monthly_deposit: inv.monthly_deposit,
+    });
+
     const current_value_nis = toNis(man.current_value, man.currency, fx.rate);
-    const cost_basis_nis = 0; // see jsdoc: net deposited = 0 for these types
-    const unrealized_pl_nis = toNis(man.unrealized_pl, man.currency, fx.rate);
+    // cost_basis = net deposited, converted to NIS
+    const cost_basis_nis = toNis(man.net_deposited, man.currency, fx.rate);
+    const unrealized_pl_nis = current_value_nis - cost_basis_nis;
+    const unrealized_pct =
+      cost_basis_nis > 0 ? (unrealized_pl_nis / cost_basis_nis) * 100 : null;
     const { stale_days, stale_level } = staleMeta(man.last_update_at);
 
     return {
       ...inv,
       remaining_units: 0,
       cost_basis_nis,
+      net_deposited_nis: cost_basis_nis,
       current_value_nis,
       current_price: null,
       current_price_currency: null,
       price_cached_at: null,
       unrealized_pl_nis,
-      unrealized_pct: null,
+      unrealized_pct,
       realized_pl_nis: 0,
       currency: man.currency,
       last_update_at: man.last_update_at,
@@ -228,7 +251,7 @@ export function computePortfolio(
   const investments = db
     .prepare<[number], InvRow>(
       `SELECT id, user_id, type, name, ticker, isin, broker, etf_kind, liquid_date,
-              closed_at, deleted_at, created_at
+              closed_at, deleted_at, monthly_deposit, deposit_currency, created_at
        FROM investments
        WHERE user_id = ? AND deleted_at IS NULL AND closed_at IS NULL`
     )
@@ -244,28 +267,39 @@ export function computePortfolio(
       ? (unrealized_pl_nis / total_net_deposited_nis) * 100
       : null;
 
-  // Realized YTD: sum of realized_pl for SELL transactions this calendar year
+  // ── FIX 2: Realized YTD — per-row with currency conversion ──────────────────
+  // For SELL: use fx_rate_at_buy (the rate locked at buy time) for accurate NIS value.
+  //           Falls back to current fx.rate if fx_rate_at_buy is NULL.
+  // For DIV:  use current fx.rate (no historical rate stored on dividends).
   const yearStart = `${new Date().getFullYear()}-01-01T00:00:00Z`;
-  const ytdRow = db
-    .prepare<[number, string], { total: number | null }>(
-      `SELECT SUM(realized_pl) as total
+
+  const sellRows = db
+    .prepare<[number, string], { realized_pl: number | null; currency: string; fx_rate_at_buy: number | null }>(
+      `SELECT realized_pl, currency, fx_rate_at_buy
        FROM transactions
        WHERE user_id = ? AND kind = 'SELL' AND occurred_at >= ?`
     )
-    .get(userId, yearStart);
-  const realized_ytd_native = ytdRow?.total ?? 0;
-  // Approximate to NIS using current rate (transactions mix currencies, best-effort)
-  const realized_ytd_nis = realized_ytd_native;
+    .all(userId, yearStart);
 
-  // Dividends YTD: sum of DIV transaction amounts this calendar year
-  const divRow = db
-    .prepare<[number, string], { total: number | null }>(
-      `SELECT SUM(total_amount) as total
+  let realized_ytd_nis = 0;
+  for (const r of sellRows) {
+    if (r.realized_pl == null) continue;
+    const rate = r.fx_rate_at_buy ?? fx.rate;
+    realized_ytd_nis += toNis(r.realized_pl, r.currency, rate);
+  }
+
+  const divRows = db
+    .prepare<[number, string], { total_amount: number; currency: string }>(
+      `SELECT total_amount, currency
        FROM transactions
        WHERE user_id = ? AND kind = 'DIV' AND occurred_at >= ?`
     )
-    .get(userId, yearStart);
-  const dividends_ytd_nis = divRow?.total ?? 0;
+    .all(userId, yearStart);
+
+  let dividends_ytd_nis = 0;
+  for (const r of divRows) {
+    dividends_ytd_nis += toNis(r.total_amount, r.currency, fx.rate);
+  }
 
   // Allocation by type
   const byType = new Map<string, number>();

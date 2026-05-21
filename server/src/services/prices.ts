@@ -13,6 +13,7 @@ import YahooFinanceClass from "yahoo-finance2";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const yahooFinance = new (YahooFinanceClass as any)();
 import type Database from "better-sqlite3";
+import { getRate } from "./fx.js";
 
 // ── TTLs ──────────────────────────────────────────────────────────────────────
 
@@ -183,6 +184,10 @@ export async function batchRefreshAll(
   db: Database.Database,
   userId: number
 ): Promise<{ last_sync: string; count: number }> {
+  // FIX 4: Warm the FX sync cache so getRateSync() returns a live rate for the
+  // portfolio computation that follows a price refresh.
+  getRate(db, userId).catch(() => { /* best-effort */ });
+
   const investments = db
     .prepare<[number], { id: number; type: string; ticker: string | null }>(
       `SELECT id, type, ticker FROM investments

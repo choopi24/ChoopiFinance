@@ -9,7 +9,8 @@ export const transactionsRouter = Router();
 transactionsRouter.use(requireAuth);
 
 const MARKET_KINDS = new Set(["BUY", "SELL", "DIV"]);
-const MANUAL_KINDS = new Set(["UPDATE"]);
+// UPDATE = balance snapshot; DEPOSIT = actual cash contribution (education/other P/L model)
+const MANUAL_KINDS = new Set(["UPDATE", "DEPOSIT"]);
 const MARKET_TYPES = new Set(["crypto", "stock", "etf"]);
 
 // GET /api/transactions — paginated ledger
@@ -76,10 +77,10 @@ transactionsRouter.post("/", (req, res) => {
 
     // Validate kind matches investment type
     if (isMarket && MANUAL_KINDS.has(kind as string)) {
-      return fail(res, `${inv.type} investments use BUY / SELL / DIV, not UPDATE`);
+      return fail(res, `${inv.type} investments use BUY / SELL / DIV, not ${kind}`);
     }
     if (!isMarket && MARKET_KINDS.has(kind as string)) {
-      return fail(res, `${inv.type} investments use UPDATE, not ${kind}`);
+      return fail(res, `${inv.type} investments use UPDATE / DEPOSIT, not ${kind}`);
     }
 
     // Compute total_amount if not provided (BUY/SELL)

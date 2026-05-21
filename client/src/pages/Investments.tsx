@@ -242,7 +242,8 @@ export default function Investments() {
   const [balanceInv, setBalanceInv] = useState<Investment | null>(null);
 
   const { data: investments = [], isLoading } = useInvestments(showClosed);
-  const fxRate = fx?.rate ?? 3.7;
+  // Use live rate from useFxRate → server-embedded rate from enriched investments → documented fallback
+  const fxRate = fx?.rate ?? investments[0]?.fx_rate_used ?? 3.7;
 
   // Filter + counts
   const filtered = useMemo(() => {

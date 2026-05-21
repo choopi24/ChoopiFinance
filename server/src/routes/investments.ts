@@ -11,6 +11,21 @@ const MARKET_TYPES = new Set(["crypto", "stock", "etf"]);
 const MANUAL_TYPES = new Set(["pension", "education", "other"]);
 const VALID_TYPES   = new Set([...MARKET_TYPES, ...MANUAL_TYPES]);
 
+// ── Shared SELECT for enrichment ─────────────────────────────────────────────
+
+const INV_SELECT = `
+  SELECT id, user_id, type, name, ticker, isin, broker, etf_kind,
+         liquid_date, closed_at, deleted_at, monthly_deposit, deposit_currency, created_at
+  FROM investments
+`;
+
+/** Normalise ticker: trim + uppercase, return null for empty strings. */
+function normaliseTicker(raw: unknown): string | null {
+  if (raw == null) return null;
+  const s = String(raw).trim().toUpperCase();
+  return s || null;
+}
+
 // GET /api/investments?include_closed=false
 investmentsRouter.get("/", (req, res) => {
   try {
@@ -20,9 +35,7 @@ investmentsRouter.get("/", (req, res) => {
 
     const rows = db
       .prepare(
-        `SELECT id, user_id, type, name, ticker, isin, broker, etf_kind,
-                liquid_date, closed_at, deleted_at, created_at
-         FROM investments
+        `${INV_SELECT}
          WHERE user_id = ? AND deleted_at IS NULL
            ${includeClosed ? "" : "AND closed_at IS NULL"}
          ORDER BY created_at DESC`
@@ -43,6 +56,7 @@ investmentsRouter.post("/", (req, res) => {
     const {
       type, name, ticker, isin, broker, etf_kind, liquid_date,
       initial_balance, currency = "NIS", occurred_at,
+      monthly_deposit, deposit_currency = "NIS",
     } = req.body as Record<string, unknown>;
 
     if (!type || !VALID_TYPES.has(type as string)) {
@@ -52,13 +66,21 @@ investmentsRouter.post("/", (req, res) => {
       return fail(res, "name is required");
     }
 
+    // FIX 1: normalise ticker to UPPERCASE on insert
+    const tickerNorm = normaliseTicker(ticker);
+
     const result = db.prepare(
-      `INSERT INTO investments (user_id, type, name, ticker, isin, broker, etf_kind, liquid_date)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO investments
+         (user_id, type, name, ticker, isin, broker, etf_kind, liquid_date,
+          monthly_deposit, deposit_currency)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       req.user!.id, type, (name as string).trim(),
-      ticker ?? null, isin ?? null, broker ?? null,
-      etf_kind ?? null, liquid_date ?? null
+      tickerNorm,
+      isin ?? null, broker ?? null,
+      etf_kind ?? null, liquid_date ?? null,
+      monthly_deposit != null ? Number(monthly_deposit) : null,
+      deposit_currency ?? "NIS"
     );
 
     const investmentId = result.lastInsertRowid as number;
@@ -78,12 +100,7 @@ investmentsRouter.post("/", (req, res) => {
       );
     }
 
-    const inv = db.prepare(
-      `SELECT id, user_id, type, name, ticker, isin, broker, etf_kind,
-              liquid_date, closed_at, deleted_at, created_at
-       FROM investments WHERE id = ?`
-    ).get(investmentId);
-
+    const inv = db.prepare(`${INV_SELECT} WHERE id = ?`).get(investmentId);
     const fx = getUsdNisRate(db, req.user!.id);
     ok(res, enrichInvestment(db, inv as any, fx), 201);
   } catch (e) {
@@ -102,12 +119,22 @@ investmentsRouter.patch("/:id", (req, res) => {
     ).get(id, req.user!.id);
     if (!inv) return fail(res, "Investment not found", 404);
 
-    const allowed = ["name", "ticker", "isin", "broker", "etf_kind", "liquid_date"];
+    const allowed = ["name", "ticker", "isin", "broker", "etf_kind", "liquid_date",
+                     "monthly_deposit", "deposit_currency"];
     const updates: string[] = [];
     const values: unknown[] = [];
 
     for (const key of allowed) {
-      if (key in req.body) {
+      if (!(key in req.body)) continue;
+      if (key === "ticker") {
+        // FIX 1: normalise ticker to UPPERCASE on patch
+        updates.push("ticker = ?");
+        values.push(normaliseTicker(req.body[key]));
+      } else if (key === "monthly_deposit") {
+        updates.push("monthly_deposit = ?");
+        const v = req.body[key];
+        values.push(v != null && v !== "" ? Number(v) : null);
+      } else {
         updates.push(`${key} = ?`);
         values.push(req.body[key] ?? null);
       }
@@ -117,12 +144,7 @@ investmentsRouter.patch("/:id", (req, res) => {
     values.push(id);
     db.prepare(`UPDATE investments SET ${updates.join(", ")} WHERE id = ?`).run(...values);
 
-    const updated = db.prepare(
-      `SELECT id, user_id, type, name, ticker, isin, broker, etf_kind,
-              liquid_date, closed_at, deleted_at, created_at
-       FROM investments WHERE id = ?`
-    ).get(id);
-
+    const updated = db.prepare(`${INV_SELECT} WHERE id = ?`).get(id);
     const fx = getUsdNisRate(db, req.user!.id);
     ok(res, enrichInvestment(db, updated as any, fx));
   } catch (e) {
@@ -138,14 +160,13 @@ investmentsRouter.get("/check-existing", (req, res) => {
     if (!ticker || !type) return fail(res, "ticker and type are required");
 
     const existing = db.prepare(
-      `SELECT id, name, ticker, type, broker, created_at FROM investments
+      `${INV_SELECT}
        WHERE user_id = ? AND ticker = ? AND type = ?
          AND deleted_at IS NULL AND closed_at IS NULL`
     ).get(req.user!.id, ticker.toUpperCase(), type) as Record<string,unknown> | undefined;
 
     if (!existing) return ok(res, null);
 
-    // Get position summary
     const fx = getUsdNisRate(db, req.user!.id);
     const enriched = enrichInvestment(db, existing as any, fx);
     ok(res, {
@@ -187,7 +208,7 @@ investmentsRouter.get("/:id/tx-count", (req, res) => {
   }
 });
 
-// POST /api/investments/:id/update-balance — quick UPDATE transaction for pension/education/other
+// POST /api/investments/:id/update-balance — quick UPDATE snapshot for pension/education/other
 investmentsRouter.post("/:id/update-balance", (req, res) => {
   try {
     const db = getDb();
@@ -211,6 +232,43 @@ investmentsRouter.post("/:id/update-balance", (req, res) => {
        VALUES (?, ?, 'UPDATE', ?, ?, ?, ?)`
     ).run(
       id, req.user!.id, bal, currency,
+      occurred_at ?? new Date().toISOString(),
+      notes ?? null
+    );
+
+    ok(res, { transaction_id: result.lastInsertRowid }, 201);
+  } catch (e) {
+    fail(res, (e as Error).message, 500);
+  }
+});
+
+// POST /api/investments/:id/log-deposit — record a cash deposit for education/other P/L tracking
+investmentsRouter.post("/:id/log-deposit", (req, res) => {
+  try {
+    const db = getDb();
+    const id = Number(req.params.id);
+
+    const inv = db.prepare(
+      "SELECT * FROM investments WHERE id = ? AND user_id = ? AND deleted_at IS NULL"
+    ).get(id, req.user!.id) as any;
+    if (!inv) return fail(res, "Investment not found", 404);
+
+    if (inv.type === "pension") {
+      return fail(res, "Pension funds use monthly_deposit for contribution tracking, not DEPOSIT transactions");
+    }
+    if (!MANUAL_TYPES.has(inv.type)) {
+      return fail(res, "log-deposit is only for education / other investments");
+    }
+
+    const { amount, currency = "NIS", occurred_at, notes } = req.body as Record<string,unknown>;
+    const amt = Number(amount);
+    if (isNaN(amt) || amt <= 0) return fail(res, "amount must be a positive number");
+
+    const result = db.prepare(
+      `INSERT INTO transactions (investment_id, user_id, kind, total_amount, currency, occurred_at, notes)
+       VALUES (?, ?, 'DEPOSIT', ?, ?, ?, ?)`
+    ).run(
+      id, req.user!.id, amt, currency,
       occurred_at ?? new Date().toISOString(),
       notes ?? null
     );

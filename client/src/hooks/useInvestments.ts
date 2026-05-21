@@ -16,9 +16,14 @@ export interface Investment {
   liquid_date: string | null;
   closed_at: string | null;
   created_at: string;
+  // Pension deposit model
+  monthly_deposit: number | null;
+  deposit_currency: string;
   // Position (from enrichment)
   remaining_units: number;
   cost_basis_nis: number;
+  /** Actual cash deposited, NIS-denominated (mirrors cost_basis_nis for non-market types). */
+  net_deposited_nis: number;
   current_value_nis: number;
   current_price: number | null;
   current_price_currency: string | null;

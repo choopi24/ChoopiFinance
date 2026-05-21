@@ -1,7 +1,9 @@
 export type AssetType = "crypto" | "stock" | "etf" | "pension" | "education" | "other";
 export type Currency = "NIS" | "USD";
-// "UPDATE" is the canonical DB value; "UPD" kept for display abbreviation compatibility
-export type TransactionKind = "BUY" | "SELL" | "DIV" | "UPDATE" | "UPD";
+// "UPDATE" = balance snapshot for manual types.
+// "DEPOSIT" = actual cash contribution to education/other funds (for net-deposited P/L model).
+// "UPD" kept for display abbreviation compatibility.
+export type TransactionKind = "BUY" | "SELL" | "DIV" | "UPDATE" | "DEPOSIT" | "UPD";
 export type Theme = "light" | "dark";
 export type NavId = "dashboard" | "investments" | "transactions" | "realized" | "settings";
 
@@ -23,6 +25,10 @@ export interface Investment {
   etf_kind?: "accumulating" | "distributing";
   liquid_date?: string;
   closed_at?: string;
+  /** Expected monthly contribution amount (pension only). */
+  monthly_deposit?: number | null;
+  /** Currency of monthly_deposit (pension only). Defaults to 'NIS'. */
+  deposit_currency?: string;
   created_at: string;
 }
 
@@ -39,6 +45,7 @@ export interface Transaction {
   occurred_at: string;
   notes?: string;
   realized_pl?: number;
+  fx_rate_at_buy?: number;
   created_at: string;
 }
 

@@ -31,6 +31,8 @@ function makeDb(): Database.Database {
       liquid_date TEXT,
       closed_at TEXT,
       deleted_at TEXT,
+      monthly_deposit REAL,
+      deposit_currency TEXT NOT NULL DEFAULT 'NIS',
       created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
     );
     CREATE TABLE transactions (
@@ -60,11 +62,14 @@ function makeDb(): Database.Database {
 
 function insertInvestment(
   db: Database.Database,
-  type = "stock"
+  type = "stock",
+  monthly_deposit: number | null = null
 ): number {
   const r = db
-    .prepare("INSERT INTO investments (user_id, type, name) VALUES (1, ?, 'Test')")
-    .run(type);
+    .prepare(
+      "INSERT INTO investments (user_id, type, name, monthly_deposit) VALUES (1, ?, 'Test', ?)"
+    )
+    .run(type, monthly_deposit);
   return r.lastInsertRowid as number;
 }
 
@@ -109,7 +114,20 @@ function update(
   ).run(invId, amount, currency, date);
 }
 
-// ── Tests ────────────────────────────────────────────────────────────────────
+function deposit(
+  db: Database.Database,
+  invId: number,
+  amount: number,
+  date: string,
+  currency = "NIS"
+): void {
+  db.prepare(
+    `INSERT INTO transactions (investment_id, user_id, kind, total_amount, currency, occurred_at)
+     VALUES (?, 1, 'DEPOSIT', ?, ?, ?)`
+  ).run(invId, amount, currency, date);
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("computePosition — FIFO", () => {
   let db: Database.Database;
@@ -249,7 +267,9 @@ describe("recomputeRealized — DB persistence", () => {
   });
 });
 
-describe("computeManualPosition — pension / education / other", () => {
+// ── computeManualPosition — new deposit model ─────────────────────────────────
+
+describe("computeManualPosition — pension (monthly_deposit model)", () => {
   let db: Database.Database;
 
   beforeEach(() => {
@@ -258,42 +278,116 @@ describe("computeManualPosition — pension / education / other", () => {
 
   it("returns zero when no UPDATE transactions", () => {
     const invId = insertInvestment(db, "pension");
-    const pos = computeManualPosition(db, invId);
+    const pos = computeManualPosition(db, invId, { type: "pension" });
     expect(pos.current_value).toBe(0);
+    expect(pos.net_deposited).toBe(0);
     expect(pos.unrealized_pl).toBe(0);
     expect(pos.update_count).toBe(0);
     expect(pos.last_update_at).toBeNull();
   });
 
-  it("initial 50k + UPDATE 53k → +3k unrealized, current=53k", () => {
-    const invId = insertInvestment(db, "pension");
+  it("pension with no monthly_deposit → net_deposited=0, unrealized=current_value", () => {
+    const invId = insertInvestment(db, "pension", null);
     update(db, invId, 50_000, "2024-01-01");
     update(db, invId, 53_000, "2024-06-01");
 
-    const pos = computeManualPosition(db, invId);
+    const pos = computeManualPosition(db, invId, { type: "pension", monthly_deposit: null });
     expect(pos.current_value).toBe(53_000);
-    expect(pos.unrealized_pl).toBe(3_000);   // 53k - 50k
+    expect(pos.net_deposited).toBe(0);
+    expect(pos.unrealized_pl).toBe(53_000);
     expect(pos.update_count).toBe(2);
-    expect(pos.currency).toBe("NIS");
   });
 
-  it("single UPDATE → unrealized_pl is 0", () => {
+  it("pension: monthly_deposit=2000, first update 12 months ago → expected_deposited=24k, P/L +6k", () => {
+    const invId = insertInvestment(db, "pension", 2_000);
+
+    // First UPDATE exactly 12 calendar months ago
+    const firstDate = new Date();
+    firstDate.setMonth(firstDate.getMonth() - 12);
+    const firstIso = firstDate.toISOString().replace(/\.\d{3}Z$/, "Z");
+
+    update(db, invId, 20_000, firstIso);      // initial snapshot
+    update(db, invId, 30_000, new Date().toISOString()); // current snapshot
+
+    const pos = computeManualPosition(db, invId, { type: "pension", monthly_deposit: 2_000 });
+
+    expect(pos.current_value).toBe(30_000);
+    expect(pos.net_deposited).toBe(24_000);       // 2000 × 12
+    expect(pos.unrealized_pl).toBeCloseTo(6_000, 2);
+    expect(pos.update_count).toBe(2);
+  });
+
+  it("pension: partial month does not count — only whole months", () => {
+    // Set first update to exactly N months ago (no day-of-month skew)
+    const invId = insertInvestment(db, "pension", 1_000);
+
+    // 6 months ago
+    const sixMonthsAgo = new Date();
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+    update(db, invId, 5_000, sixMonthsAgo.toISOString());
+    update(db, invId, 7_000, new Date().toISOString());
+
+    const pos = computeManualPosition(db, invId, { type: "pension", monthly_deposit: 1_000 });
+    expect(pos.net_deposited).toBe(6_000);  // 1000 × 6
+    expect(pos.unrealized_pl).toBe(1_000);  // 7000 - 6000
+  });
+});
+
+describe("computeManualPosition — education / other (DEPOSIT model)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = makeDb();
+  });
+
+  it("no DEPOSIT transactions → net_deposited=0, unrealized=current_value", () => {
     const invId = insertInvestment(db, "education");
     update(db, invId, 100_000, "2024-01-01");
 
-    const pos = computeManualPosition(db, invId);
+    const pos = computeManualPosition(db, invId, { type: "education" });
     expect(pos.current_value).toBe(100_000);
-    expect(pos.unrealized_pl).toBe(0);
+    expect(pos.net_deposited).toBe(0);
+    expect(pos.unrealized_pl).toBe(100_000);
     expect(pos.update_count).toBe(1);
   });
 
-  it("decrease is reflected as negative unrealized_pl", () => {
-    const invId = insertInvestment(db, "other");
-    update(db, invId, 80_000, "2024-01-01");
-    update(db, invId, 75_000, "2024-06-01");
+  it("education: two DEPOSITs (1000+1000) + UPDATE 2500 → P/L +500", () => {
+    const invId = insertInvestment(db, "education");
 
-    const pos = computeManualPosition(db, invId);
-    expect(pos.current_value).toBe(75_000);
-    expect(pos.unrealized_pl).toBe(-5_000);
+    deposit(db, invId, 1_000, "2024-01-01");
+    deposit(db, invId, 1_000, "2024-06-01");
+    update(db, invId, 2_500, "2024-12-01");
+
+    const pos = computeManualPosition(db, invId, { type: "education" });
+    expect(pos.current_value).toBe(2_500);
+    expect(pos.net_deposited).toBe(2_000);  // 1000 + 1000
+    expect(pos.unrealized_pl).toBe(500);
+    expect(pos.update_count).toBe(1);
+  });
+
+  it("other: DEPOSIT exceeds current value → negative unrealized P/L", () => {
+    const invId = insertInvestment(db, "other");
+
+    deposit(db, invId, 10_000, "2024-01-01");
+    update(db, invId, 8_000, "2024-12-01"); // value dropped
+
+    const pos = computeManualPosition(db, invId, { type: "other" });
+    expect(pos.current_value).toBe(8_000);
+    expect(pos.net_deposited).toBe(10_000);
+    expect(pos.unrealized_pl).toBe(-2_000);
+  });
+
+  it("current_value reflects the LATEST UPDATE transaction (not earliest)", () => {
+    const invId = insertInvestment(db, "education");
+
+    deposit(db, invId, 5_000, "2024-01-01");
+    update(db, invId, 5_200, "2024-03-01");
+    update(db, invId, 5_800, "2024-09-01"); // newest
+
+    const pos = computeManualPosition(db, invId, { type: "education" });
+    expect(pos.current_value).toBe(5_800);
+    expect(pos.net_deposited).toBe(5_000);
+    expect(pos.unrealized_pl).toBe(800);
+    expect(pos.update_count).toBe(2);
   });
 });
