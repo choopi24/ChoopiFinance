@@ -1,0 +1,90 @@
+import express from "express";
+import cookieParser from "cookie-parser";
+import cors from "cors";
+import cron from "node-cron";
+import { existsSync } from "fs";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
+import { getDb } from "./db/init.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+import { authRouter } from "./routes/auth.js";
+import { systemRouter } from "./routes/system.js";
+import { investmentsRouter } from "./routes/investments.js";
+import { transactionsRouter } from "./routes/transactions.js";
+import { portfolioRouter } from "./routes/portfolio.js";
+import { realizedRouter } from "./routes/realized.js";
+import { pricesRouter } from "./routes/prices.js";
+import { fxRouter } from "./routes/fx.js";
+import { settingsRouter } from "./routes/settings.js";
+import { lookupRouter } from "./routes/lookup.js";
+import { csvRouter } from "./routes/csv.js";
+import { searchRouter } from "./routes/search.js";
+import { errorHandler } from "./middleware/errorHandler.js";
+import { takeSnapshot } from "./services/snapshot.js";
+import { getRate } from "./services/fx.js";
+
+const app = express();
+const PORT = Number(process.env.PORT ?? 3001);
+const HOST = "0.0.0.0";
+
+app.use(cors({
+  origin: (_origin, cb) => cb(null, true), // LAN — security handled by auth cookie
+  credentials: true,
+}));
+app.use(express.json());
+app.use(cookieParser());
+
+// Initialise DB + run migrations on startup
+getDb();
+
+// Warm the FX cache on boot (best-effort, non-blocking)
+getRate(getDb()).then(r => {
+  console.log(`FX cache warm  →  1 USD = ${r.rate.toFixed(4)} NIS (${r.source})`);
+}).catch(() => {
+  console.warn("FX warm-up skipped (Frankfurter unreachable, will retry on first request)");
+});
+
+// Routes
+app.get("/api/health", (_req, res) => {
+  res.json({ ok: true, ts: new Date().toISOString() });
+});
+
+app.use("/api/auth",         authRouter);
+app.use("/api/system",       systemRouter);
+app.use("/api/investments",  investmentsRouter);
+app.use("/api/transactions", transactionsRouter);
+app.use("/api/portfolio",    portfolioRouter);
+app.use("/api/realized",     realizedRouter);
+app.use("/api/prices",       pricesRouter);
+app.use("/api/fx",           fxRouter);
+app.use("/api/settings",     settingsRouter);
+app.use("/api/lookup",       lookupRouter);
+app.use("/api/csv",          csvRouter);
+app.use("/api/search",      searchRouter);
+
+app.use(errorHandler);
+
+// ── Serve built client in production ─────────────────────────────────────────
+const CLIENT_DIST = join(__dirname, "../../client/dist");
+if (existsSync(CLIENT_DIST)) {
+  app.use(express.static(CLIENT_DIST));
+  app.get("*", (_req, res) => res.sendFile(join(CLIENT_DIST, "index.html")));
+  console.log(`Serving static  →  ${CLIENT_DIST}`);
+}
+
+app.listen(PORT, HOST, () => {
+  console.log(`Choopi server  →  http://${HOST}:${PORT}`);
+  console.log(`Health check   →  http://localhost:${PORT}/api/health`);
+});
+
+// ── Daily portfolio snapshot at 02:00 local ───────────────────────────────────
+cron.schedule("0 2 * * *", () => {
+  console.log("[cron] Daily snapshot starting…");
+  const db = getDb();
+  const users = db.prepare("SELECT id FROM users").all() as { id: number }[];
+  for (const u of users) {
+    takeSnapshot(db, u.id);
+  }
+  console.log(`[cron] Snapshotted ${users.length} user(s)`);
+});

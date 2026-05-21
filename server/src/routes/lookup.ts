@@ -1,0 +1,78 @@
+import { Router } from "express";
+import YahooFinanceClass from "yahoo-finance2";
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const yahooFinance = new (YahooFinanceClass as any)();
+import { requireAuth } from "../middleware/requireAuth.js";
+import { ok, fail } from "../middleware/respond.js";
+
+export const lookupRouter = Router();
+lookupRouter.use(requireAuth);
+
+// GET /api/lookup/isin/:isin
+// Searches Yahoo Finance by ISIN, returns name, ticker, currency, etf_kind.
+lookupRouter.get("/isin/:isin", async (req, res) => {
+  const { isin } = req.params;
+
+  if (!/^[A-Z]{2}[A-Z0-9]{10}$/.test(isin.toUpperCase())) {
+    return fail(res, "Invalid ISIN format (expect 12 chars: 2-letter country + 10 alphanumeric)");
+  }
+
+  try {
+    const search = await yahooFinance.search(isin.toUpperCase()) as { quotes?: Record<string, unknown>[] };
+    const hit = search.quotes?.[0];
+
+    if (!hit || !hit.symbol) {
+      return fail(res, "No security found for this ISIN", 404);
+    }
+
+    const symbol = hit.symbol as string;
+
+    // Get a richer quote for name + currency
+    const quote = await yahooFinance.quote(symbol) as Record<string, unknown>;
+
+    const name: string = (
+      (quote.longName as string | undefined) ??
+      (quote.shortName as string | undefined) ??
+      (hit.longname as string | undefined) ??
+      (hit.shortname as string | undefined) ??
+      symbol
+    );
+    const currency: string = ((quote.currency as string | undefined) ?? "USD").toUpperCase();
+    const quoteType: string = ((quote.quoteType as string | undefined) ?? "").toLowerCase();
+
+    // Detect ETF kind from security name (heuristic)
+    const lname = name.toLowerCase();
+    let etf_kind: string | null = null;
+    if (lname.includes("acc") || lname.includes("accumul") || lname.includes("capitaliz")) {
+      etf_kind = "accumulating";
+    } else if (
+      lname.includes("dist") ||
+      lname.includes("distribut") ||
+      lname.includes("income") ||
+      lname.includes("dividend")
+    ) {
+      etf_kind = "distributing";
+    }
+
+    // Map Yahoo quoteType → our asset type
+    const typeMap: Record<string, string> = {
+      equity: "stock",
+      etf:    "etf",
+      mutualfund: "etf",
+      fund:   "etf",
+    };
+    const assetType = typeMap[quoteType] ?? "stock";
+
+    ok(res, {
+      isin: isin.toUpperCase(),
+      symbol,
+      name,
+      currency,
+      etf_kind,
+      asset_type: assetType,
+      exchange: (quote.exchange as string | undefined) ?? null,
+    });
+  } catch (e) {
+    fail(res, `ISIN lookup failed: ${(e as Error).message}`, 500);
+  }
+});

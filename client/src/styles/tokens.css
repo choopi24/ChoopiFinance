@@ -1,0 +1,116 @@
+/* ===== Choopi Finance — Design Tokens ===== */
+
+:root {
+  /* Typography */
+  --font-sans: "Geist", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --font-serif: "Instrument Serif", "Iowan Old Style", Georgia, serif;
+
+  /* Type scale */
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 14px;
+  --text-md: 15px;
+  --text-lg: 18px;
+  --text-xl: 22px;
+  --text-2xl: 28px;
+  --text-3xl: 36px;
+  --text-display: 64px;
+
+  /* Spacing scale (4px base) */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+  --sp-16: 64px;
+
+  /* Radii */
+  --r-xs: 6px;
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 20px;
+  --r-pill: 999px;
+
+  /* Brand accents (shared) */
+  --emerald: #0F9D6E;
+  --emerald-soft: rgba(15, 157, 110, 0.12);
+  --rose: #E5484D;
+  --rose-soft: rgba(229, 72, 77, 0.12);
+
+  --grad-from: #7C3AED;
+  --grad-mid:  #C026D3;
+  --grad-to:   #F472B6;
+
+  /* Chart palette (asset types) */
+  --c-crypto: #7C3AED;
+  --c-stocks: #0EA5E9;
+  --c-etf:    #14B8A6;
+  --c-pension:#F59E0B;
+  --c-edu:    #EC4899;
+  --c-other:  #94A3B8;
+}
+
+/* Light theme */
+[data-theme="light"] {
+  --bg:        #F7F5F0;
+  --bg-alt:    #EFECE4;
+  --surface:   #FFFFFF;
+  --surface-2: #FAF8F3;
+  --border:    #E7E3D9;
+  --border-strong: #D5D0C2;
+  --text:      #18181B;
+  --text-soft: #5B5A56;
+  --text-faint:#9A9892;
+  --shadow-sm: 0 1px 2px rgba(24,24,27,0.04);
+  --shadow-md: 0 4px 16px rgba(24,24,27,0.06);
+  --shadow-lg: 0 12px 40px rgba(24,24,27,0.08);
+  --skeleton:  linear-gradient(90deg, #ECE9E1 0%, #F4F2EC 50%, #ECE9E1 100%);
+}
+
+/* Dark theme */
+[data-theme="dark"] {
+  --bg:        #0B0B0F;
+  --bg-alt:    #08080B;
+  --surface:   #15161B;
+  --surface-2: #1B1C22;
+  --border:    #26272E;
+  --border-strong: #34353D;
+  --text:      #F4F4F5;
+  --text-soft: #A1A1AA;
+  --text-faint:#6B6C74;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.4);
+  --shadow-md: 0 4px 16px rgba(0,0,0,0.35);
+  --shadow-lg: 0 12px 40px rgba(0,0,0,0.5);
+  --skeleton:  linear-gradient(90deg, #1A1B21 0%, #22232A 50%, #1A1B21 100%);
+}
+
+/* Skeleton shimmer */
+@keyframes shimmer { from { background-position: -200% 0; } to { background-position: 200% 0; } }
+
+/* Refresh spin */
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.skel {
+  background: var(--skeleton);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s infinite linear;
+  border-radius: var(--r-sm);
+}
+
+/* Modal slide-up */
+@keyframes slideUp {
+  from { transform: translateY(16px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+/* Focus ring */
+*:focus-visible {
+  outline: 2px solid var(--grad-mid);
+  outline-offset: 2px;
+  border-radius: 4px;
+}

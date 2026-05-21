@@ -1,0 +1,21 @@
+node_modules/
+dist/
+.env
+.env.local
+
+# SQLite database
+server/data/*.db
+server/data/*.db-shm
+server/data/*.db-wal
+
+# Build outputs
+client/dist/
+server/dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*

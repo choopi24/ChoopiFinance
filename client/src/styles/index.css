@@ -1,0 +1,82 @@
+/* 1. Fonts — bundled locally via @fontsource packages */
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/jetbrains-mono";
+@import "@fontsource/instrument-serif/400.css";
+@import "@fontsource/instrument-serif/400-italic.css";
+
+/* 2. Design tokens (CSS custom properties, light/dark themes) */
+@import "./tokens.css";
+
+/* 3. Component CSS classes (cf-* namespace) */
+@import "./components.css";
+
+/* 4. Tailwind v4 — CSS-first, no tailwind.config.js needed */
+@import "tailwindcss";
+
+/* 5. Map design tokens to Tailwind's theme system.
+   "inline" makes utilities reference the CSS var at runtime
+   so light/dark switching is instant — just swap data-theme on <html>. */
+@theme inline {
+  --color-bg:            var(--bg);
+  --color-bg-alt:        var(--bg-alt);
+  --color-surface:       var(--surface);
+  --color-surface-2:     var(--surface-2);
+  --color-border:        var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text:          var(--text);
+  --color-text-soft:     var(--text-soft);
+  --color-text-faint:    var(--text-faint);
+  --color-emerald:       var(--emerald);
+  --color-rose:          var(--rose);
+  --color-accent:        var(--grad-from);
+  --color-accent-2:      var(--grad-to);
+  --color-c-crypto:      var(--c-crypto);
+  --color-c-stocks:      var(--c-stocks);
+  --color-c-etf:         var(--c-etf);
+  --color-c-pension:     var(--c-pension);
+  --color-c-edu:         var(--c-edu);
+  --color-c-other:       var(--c-other);
+
+  --font-sans:  var(--font-sans);
+  --font-mono:  var(--font-mono);
+  --font-serif: var(--font-serif);
+
+  --radius-xs:   var(--r-xs);
+  --radius-sm:   var(--r-sm);
+  --radius-md:   var(--r-md);
+  --radius-lg:   var(--r-lg);
+  --radius-xl:   var(--r-xl);
+  --radius-pill: var(--r-pill);
+}
+
+/* 6. Global base */
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+
+*:focus { outline: none; }
+*:focus-visible {
+  outline: 2px solid var(--grad-from);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-size: var(--text-base);
+  line-height: 1.45;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1, "zero" 1;
+}
+.serif { font-family: var(--font-serif); }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
