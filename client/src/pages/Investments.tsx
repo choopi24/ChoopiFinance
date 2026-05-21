@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { Plus, RotateCw, Eye, EyeOff, Edit2, Trash2, FileText, RefreshCw, Upload } from "lucide-react";
+import { Plus, RotateCw, Eye, EyeOff, Edit2, Trash2, FileText, RefreshCw, Upload, History } from "lucide-react";
 import { EmptyState } from "../components/EmptyState";
 import { CsvImportModal } from "../components/CsvImportModal";
 import { useAuth } from "../context/AuthContext";
@@ -14,6 +14,7 @@ import { AssetIcon } from "../components/AssetIcon";
 import { Button } from "../components/Button";
 import { DeleteConfirmModal } from "../components/DeleteConfirmModal";
 import { UpdateBalanceModal } from "../components/UpdateBalanceModal";
+import { BackfillModal } from "../components/BackfillModal";
 import { SkeletonShimmer } from "../components/SkeletonShimmer";
 import { fmt, pct } from "../lib/fmt";
 import type { Currency, AssetType } from "@choopi/shared";
@@ -94,9 +95,10 @@ interface RowProps {
   onEdit: (inv: Investment) => void;
   onDelete: (id: number) => void;
   onUpdateBalance: (inv: Investment) => void;
+  onBackfill: (inv: Investment) => void;
 }
 
-function InvRow({ inv, currency, fxRate, onEdit, onDelete, onUpdateBalance }: RowProps) {
+function InvRow({ inv, currency, fxRate, onEdit, onDelete, onUpdateBalance, onBackfill }: RowProps) {
   const value   = toDisplayCurrency(inv.current_value_nis, currency, fxRate);
   const cost    = toDisplayCurrency(inv.cost_basis_nis, currency, fxRate);
   const unreal  = toDisplayCurrency(inv.unrealized_pl_nis, currency, fxRate);
@@ -160,6 +162,15 @@ function InvRow({ inv, currency, fxRate, onEdit, onDelete, onUpdateBalance }: Ro
               <RefreshCw size={14} strokeWidth={1.6} />
             </button>
           )}
+          {!isClosed && (
+            <button
+              className="cf-iconbtn"
+              title="Backfill history"
+              onClick={() => onBackfill(inv)}
+            >
+              <History size={14} strokeWidth={1.6} />
+            </button>
+          )}
           <button className="cf-iconbtn" title="Edit" onClick={() => onEdit(inv)}>
             <Edit2 size={14} strokeWidth={1.6} />
           </button>
@@ -186,7 +197,7 @@ function InvRow({ inv, currency, fxRate, onEdit, onDelete, onUpdateBalance }: Ro
 
 // ── Mobile card ───────────────────────────────────────────────────────────────
 
-function InvCard({ inv, currency, fxRate, onUpdateBalance }: Omit<RowProps, "onEdit" | "onDelete">) {
+function InvCard({ inv, currency, fxRate, onUpdateBalance, onBackfill }: Omit<RowProps, "onEdit" | "onDelete">) {
   const value  = toDisplayCurrency(inv.current_value_nis, currency, fxRate);
   const unreal = toDisplayCurrency(inv.unrealized_pl_nis, currency, fxRate);
   const isPos  = inv.unrealized_pl_nis >= 0;
@@ -209,15 +220,17 @@ function InvCard({ inv, currency, fxRate, onUpdateBalance }: Omit<RowProps, "onE
             {isPos ? "+" : "−"}{fmt(Math.abs(unreal), { currency })}
           </div>
         )}
-        {isManual && !isClosed && (
-          <button
-            className="cf-iconbtn"
-            title="Update balance"
-            onClick={() => onUpdateBalance(inv)}
-            style={{ marginTop: 4 }}
-          >
-            <RefreshCw size={13} strokeWidth={1.6} />
-          </button>
+        {!isClosed && (
+          <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+            {isManual && (
+              <button className="cf-iconbtn" title="Update balance" onClick={() => onUpdateBalance(inv)}>
+                <RefreshCw size={13} strokeWidth={1.6} />
+              </button>
+            )}
+            <button className="cf-iconbtn" title="Backfill history" onClick={() => onBackfill(inv)}>
+              <History size={13} strokeWidth={1.6} />
+            </button>
+          </div>
         )}
       </div>
     </div>
@@ -233,13 +246,14 @@ export default function Investments() {
   const { refresh, isRefreshing, lastSync } = usePrices();
   const { data: fx } = useFxRate();
 
-  const [filter, setFilter]         = useState("all");
-  const [showClosed, setShowClosed] = useState(false);
-  const [addOpen, setAddOpen]       = useState(false);
-  const [csvOpen, setCsvOpen]       = useState(false);
-  const [editInv, setEditInv]       = useState<Investment | null>(null);
-  const [deleteId, setDeleteId]     = useState<number | null>(null);
-  const [balanceInv, setBalanceInv] = useState<Investment | null>(null);
+  const [filter, setFilter]           = useState("all");
+  const [showClosed, setShowClosed]   = useState(false);
+  const [addOpen, setAddOpen]         = useState(false);
+  const [csvOpen, setCsvOpen]         = useState(false);
+  const [editInv, setEditInv]         = useState<Investment | null>(null);
+  const [deleteId, setDeleteId]       = useState<number | null>(null);
+  const [balanceInv, setBalanceInv]   = useState<Investment | null>(null);
+  const [backfillInv, setBackfillInv] = useState<Investment | null>(null);
 
   const { data: investments = [], isLoading } = useInvestments(showClosed);
   // Use live rate from useFxRate → server-embedded rate from enriched investments → documented fallback
@@ -392,6 +406,7 @@ export default function Investments() {
                     onEdit={setEditInv}
                     onDelete={setDeleteId}
                     onUpdateBalance={setBalanceInv}
+                    onBackfill={setBackfillInv}
                   />
                 ))}
               </tbody>
@@ -407,6 +422,7 @@ export default function Investments() {
                 currency={currency as Currency}
                 fxRate={fxRate}
                 onUpdateBalance={setBalanceInv}
+                onBackfill={setBackfillInv}
               />
             ))}
           </div>
@@ -422,6 +438,13 @@ export default function Investments() {
         investment={balanceInv}
         onClose={() => setBalanceInv(null)}
       />
+
+      {backfillInv && (
+        <BackfillModal
+          investment={backfillInv}
+          onClose={() => setBackfillInv(null)}
+        />
+      )}
 
       {/* Add/Edit modal — placeholder until InvestmentModal is ready */}
       {(addOpen || editInv) && (

@@ -133,6 +133,90 @@ transactionsRouter.post("/", (req, res) => {
   }
 });
 
+// POST /api/transactions/bulk — insert multiple historical transactions in one shot
+// Body: { investment_id: number; transactions: BulkRow[] }
+// Validates, inserts all rows in a single SQLite transaction, then recomputeRealized.
+transactionsRouter.post("/bulk", (req, res) => {
+  try {
+    const db = getDb();
+    const { investment_id, transactions: rows } = req.body as {
+      investment_id: number;
+      transactions: Array<{
+        kind: string;
+        units?: number | null;
+        price_per_unit?: number | null;
+        total_amount?: number | null;
+        currency?: string;
+        occurred_at: string;
+        notes?: string;
+        fx_rate_at_buy?: number | null;
+      }>;
+    };
+
+    if (!investment_id || !Array.isArray(rows) || rows.length === 0) {
+      return fail(res, "investment_id and a non-empty transactions array are required");
+    }
+
+    const inv = db.prepare(
+      "SELECT * FROM investments WHERE id = ? AND user_id = ? AND deleted_at IS NULL"
+    ).get(investment_id, req.user!.id) as any;
+    if (!inv) return fail(res, "Investment not found", 404);
+
+    const isMarket = MARKET_TYPES.has(inv.type);
+
+    // Validate all rows before touching the DB
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row.kind) return fail(res, `Row ${i + 1}: kind is required`);
+      if (isMarket && MANUAL_KINDS.has(row.kind)) {
+        return fail(res, `Row ${i + 1}: ${inv.type} investments use BUY / SELL / DIV`);
+      }
+      if (!isMarket && MARKET_KINDS.has(row.kind)) {
+        return fail(res, `Row ${i + 1}: ${inv.type} investments use UPDATE / DEPOSIT`);
+      }
+      if (!row.occurred_at) return fail(res, `Row ${i + 1}: occurred_at is required`);
+      if (new Date(row.occurred_at) > new Date()) {
+        return fail(res, `Row ${i + 1}: date cannot be in the future`);
+      }
+    }
+
+    const insertStmt = db.prepare(
+      `INSERT INTO transactions
+         (investment_id, user_id, kind, units, price_per_unit, total_amount,
+          currency, occurred_at, notes, fx_rate_at_buy)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+
+    const runBulk = db.transaction(() => {
+      for (const row of rows) {
+        let total = row.total_amount != null ? Number(row.total_amount) : null;
+        if (total == null && row.units != null && row.price_per_unit != null) {
+          total = Number(row.units) * Number(row.price_per_unit);
+        }
+        if (total == null || isNaN(total)) {
+          throw new Error("Each row needs total_amount or both units and price_per_unit");
+        }
+        insertStmt.run(
+          investment_id, req.user!.id, row.kind,
+          row.units ?? null, row.price_per_unit ?? null, total,
+          row.currency ?? "NIS",
+          row.occurred_at,
+          row.notes ?? null,
+          row.kind === "BUY" ? (row.fx_rate_at_buy ?? null) : null
+        );
+      }
+    });
+    runBulk();
+
+    if (isMarket) recomputeRealized(db, Number(investment_id));
+    takeSnapshot(db, req.user!.id);
+
+    ok(res, { inserted: rows.length }, 201);
+  } catch (e) {
+    fail(res, (e as Error).message, 500);
+  }
+});
+
 // PATCH /api/transactions/:id — edit (recomputes FIFO if SELL)
 transactionsRouter.patch("/:id", (req, res) => {
   try {

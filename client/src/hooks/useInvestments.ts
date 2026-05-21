@@ -103,16 +103,36 @@ export interface CreateInvestmentBody {
   initial_balance?: number;
   currency?: string;
   occurred_at?: string;
+  monthly_deposit?: number;
+  deposit_currency?: string;
+  /** When present for market types, creates a synthetic BUY in the same server request. */
+  holding?: {
+    units: number;
+    avg_price: number;
+    currency: string;
+    as_of: string;
+  };
 }
 
 export interface AddTransactionBody {
   investment_id: number;
-  kind: "BUY" | "SELL" | "DIV" | "UPDATE";
+  kind: "BUY" | "SELL" | "DIV" | "UPDATE" | "DEPOSIT";
   units?: number;
   price_per_unit?: number;
   total_amount?: number;
   currency: string;
   wallet_id?: number | null;
+  occurred_at: string;
+  notes?: string;
+  fx_rate_at_buy?: number;
+}
+
+export interface BulkTransactionRow {
+  kind: "BUY" | "SELL" | "DIV" | "UPDATE" | "DEPOSIT";
+  units?: number;
+  price_per_unit?: number;
+  total_amount?: number;
+  currency?: string;
   occurred_at: string;
   notes?: string;
   fx_rate_at_buy?: number;
@@ -162,6 +182,23 @@ export function useDeleteInvestment() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["investments"] });
       qc.invalidateQueries({ queryKey: ["portfolio"] });
+    },
+  });
+}
+
+export function useBulkTransactions() {
+  const qc = useQueryClient();
+  return useMutation<
+    { inserted: number },
+    Error,
+    { investment_id: number; transactions: BulkTransactionRow[] }
+  >({
+    mutationFn: body =>
+      api.post<ApiOk<{ inserted: number }>>("/transactions/bulk", body).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["investments"] });
+      qc.invalidateQueries({ queryKey: ["portfolio"] });
+      qc.invalidateQueries({ queryKey: ["transactions"] });
     },
   });
 }

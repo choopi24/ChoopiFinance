@@ -1,14 +1,17 @@
 import { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { X, ArrowLeft, GitMerge } from "lucide-react";
+import { X, ArrowLeft, GitMerge, Plus, Trash2 } from "lucide-react";
 import { TypeCard } from "./TypeCard";
 import { Button } from "./Button";
 import { Segment } from "./Segment";
-import { useCreateInvestment, useAddTransaction, useEditInvestment, useCheckExisting } from "../hooks/useInvestments";
+import {
+  useCreateInvestment, useAddTransaction, useEditInvestment,
+  useCheckExisting, useBulkTransactions,
+} from "../hooks/useInvestments";
 import { api } from "../lib/api";
 import { fmt } from "../lib/fmt";
 import type { AssetType, Currency } from "@choopi/shared";
-import type { Investment } from "../hooks/useInvestments";
+import type { Investment, BulkTransactionRow } from "../hooks/useInvestments";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -29,9 +32,12 @@ const KIND_OPTIONS = [
   { value: "BUY"  as const, label: "Buy" },
   { value: "SELL" as const, label: "Sell" },
 ];
+const ENTRY_MODE_OPTIONS = [
+  { value: "holding"     as const, label: "I already own this" },
+  { value: "transaction" as const, label: "Log a transaction" },
+];
 
 const CRYPTO_SUGGESTIONS = ["BTC", "ETH", "SOL", "ADA", "XRP", "DOT"];
-
 const MANUAL_TYPES = new Set(["pension", "education", "other"]);
 
 interface IsinResult {
@@ -48,21 +54,17 @@ interface InvestmentModalProps {
 }
 
 export function InvestmentModal({ mode, investment, onClose }: InvestmentModalProps) {
-  const [step, setStep]           = useState<1 | 2>(mode === "edit" ? 2 : 1);
-  const [selType, setSelType]     = useState<AssetType | null>(investment?.type ?? null);
-  const [error, setError]         = useState<string | null>(null);
+  const [step, setStep]       = useState<1 | 2>(mode === "edit" ? 2 : 1);
+  const [selType, setSelType] = useState<AssetType | null>(investment?.type ?? null);
+  const [error, setError]     = useState<string | null>(null);
 
-  // Escape key
   useEffect(() => {
     const h = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     document.addEventListener("keydown", h);
     return () => document.removeEventListener("keydown", h);
   }, [onClose]);
 
-  function pickType(t: AssetType) {
-    setSelType(t);
-    setStep(2);
-  }
+  function pickType(t: AssetType) { setSelType(t); setStep(2); }
 
   return createPortal(
     <div className="cf-modal-backdrop" onClick={onClose}>
@@ -94,22 +96,14 @@ export function InvestmentModal({ mode, investment, onClose }: InvestmentModalPr
           </div>
         </div>
 
-        {error && (
-          <div className="cf-modal-error">{error}</div>
-        )}
+        {error && <div className="cf-modal-error">{error}</div>}
 
         <div className="cf-modal-body">
           {step === 1 ? (
             <div className="cf-type-grid">
               {TYPES.map(({ type, label, desc }) => (
-                <TypeCard
-                  key={type}
-                  type={type}
-                  label={label}
-                  description={desc}
-                  selected={selType === type}
-                  onClick={() => pickType(type)}
-                />
+                <TypeCard key={type} type={type} label={label} description={desc}
+                  selected={selType === type} onClick={() => pickType(type)} />
               ))}
             </div>
           ) : selType ? (
@@ -139,14 +133,32 @@ interface Step2Props {
 }
 
 function Step2({ type, mode, investment, onClose, setError }: Step2Props) {
+  const [entryMode, setEntryMode] = useState<"holding" | "transaction">("holding");
+
   if (mode === "edit") {
     return <EditMetaForm investment={investment!} onClose={onClose} setError={setError} />;
   }
-  if (type === "crypto")  return <CryptoForm onClose={onClose} setError={setError} />;
-  if (type === "stock")   return <StockForm  onClose={onClose} setError={setError} isEtf={false} />;
-  if (type === "etf")     return <StockForm  onClose={onClose} setError={setError} isEtf />;
-  if (MANUAL_TYPES.has(type)) return <ManualForm type={type} onClose={onClose} setError={setError} />;
-  return null;
+
+  const isManual = MANUAL_TYPES.has(type);
+
+  return (
+    <>
+      {/* Entry mode toggle */}
+      <div style={{ marginBottom: 16 }}>
+        <Segment options={ENTRY_MODE_OPTIONS} value={entryMode} onChange={setEntryMode} />
+      </div>
+
+      {isManual ? (
+        <ManualForm type={type} onClose={onClose} setError={setError} entryMode={entryMode} />
+      ) : entryMode === "holding" ? (
+        <HoldingMarketForm type={type} onClose={onClose} setError={setError} />
+      ) : type === "crypto" ? (
+        <CryptoForm onClose={onClose} setError={setError} />
+      ) : (
+        <StockForm onClose={onClose} setError={setError} isEtf={type === "etf"} />
+      )}
+    </>
+  );
 }
 
 // ── Shared field helpers ──────────────────────────────────────────────────────
@@ -163,7 +175,7 @@ function Field({ label, children, hint }: { label: string; children: React.React
 
 function today() { return new Date().toISOString().slice(0, 10); }
 
-// ── Merge prompt inlined ──────────────────────────────────────────────────────
+// ── Merge prompt ──────────────────────────────────────────────────────────────
 
 interface MergeInfo {
   id: number; name: string; ticker: string;
@@ -186,7 +198,7 @@ function MergeBanner({ info, onSeparate }: { info: MergeInfo; onSeparate: () => 
           </span>
         </div>
         <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 4 }}>
-          This transaction will be added to the existing position (FIFO merge).
+          This will be merged into the existing position.
         </div>
       </div>
       <Button variant="ghost" size="sm" onClick={onSeparate}>Create separate</Button>
@@ -194,19 +206,195 @@ function MergeBanner({ info, onSeparate }: { info: MergeInfo; onSeparate: () => 
   );
 }
 
-// ── Crypto form ───────────────────────────────────────────────────────────────
+// ── Holding form for market types (crypto / stock / etf) ──────────────────────
+// Creates the investment + a synthetic BUY in one server call.
+
+interface HoldingMarketFormProps {
+  type: AssetType;
+  onClose: () => void;
+  setError: (e: string | null) => void;
+}
+
+function HoldingMarketForm({ type, onClose, setError }: HoldingMarketFormProps) {
+  const isCrypto = type === "crypto";
+  const isEtf    = type === "etf";
+
+  const [ticker, setTicker]     = useState("");
+  const [name, setName]         = useState("");
+  const [isin, setIsin]         = useState("");
+  const [isinLoading, setIsinLoading] = useState(false);
+  const [units, setUnits]       = useState("");
+  const [avgPrice, setAvgPrice] = useState("");
+  const [currency, setCurrency] = useState<Currency>("USD");
+  const [date, setDate]         = useState(today());
+  const [broker, setBroker]     = useState("");
+  const [notes, setNotes]       = useState("");
+  const [forceSep, setForceSep] = useState(false);
+
+  const upperTicker = ticker.toUpperCase().trim();
+  const checkEnabled = upperTicker.length >= 1 && !forceSep;
+  const { data: existing } = useCheckExisting(upperTicker, type, checkEnabled);
+
+  const createInv = useCreateInvestment();
+  const addTx     = useAddTransaction();
+  const isPending = createInv.isPending || addTx.isPending;
+
+  async function lookupIsin() {
+    if (!isin || isin.length < 12) return;
+    setIsinLoading(true);
+    try {
+      const res = await api.get<{ success: true; data: IsinResult }>(`/lookup/isin/${isin.toUpperCase()}`);
+      const d = res.data;
+      setTicker(d.symbol);
+      if (!name) setName(d.name);
+      if (d.currency === "USD" || d.currency === "NIS") setCurrency(d.currency as Currency);
+    } catch {
+      setError("ISIN not found — enter ticker manually");
+    } finally {
+      setIsinLoading(false);
+    }
+  }
+
+  async function handleSubmit() {
+    setError(null);
+    if (!upperTicker) { setError("Ticker is required"); return; }
+    const u = Number(units);
+    const p = Number(avgPrice || 0);
+    if (!units || isNaN(u) || u <= 0) { setError("Units held must be a positive number"); return; }
+    if (isNaN(p) || p < 0)            { setError("Average cost cannot be negative"); return; }
+    if (!date || new Date(date) > new Date()) { setError("Date cannot be in the future"); return; }
+
+    const asOf = new Date(date).toISOString();
+    try {
+      if (existing && !forceSep) {
+        // Merge into existing investment: post a direct BUY transaction
+        await addTx.mutateAsync({
+          investment_id: existing.id,
+          kind: "BUY",
+          units: u,
+          price_per_unit: p,
+          total_amount: u * p,
+          currency,
+          occurred_at: asOf,
+          notes: notes.trim() || "Initial holding (synthetic)",
+        });
+      } else {
+        await createInv.mutateAsync({
+          type,
+          name: name.trim() || upperTicker,
+          ticker: upperTicker,
+          isin: isin.toUpperCase() || undefined,
+          broker: broker.trim() || undefined,
+          holding: { units: u, avg_price: p, currency, as_of: asOf },
+        });
+      }
+      onClose();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  const total = Number(units || 0) * Number(avgPrice || 0);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {isEtf && (
+        <Field label="ISIN (optional — auto-fills ticker)">
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              value={isin}
+              onChange={e => setIsin(e.target.value.toUpperCase())}
+              placeholder="IE00B4L5Y983"
+              style={{ flex: 1 }}
+              onBlur={lookupIsin}
+            />
+            <Button variant="ghost" size="sm" onClick={lookupIsin} disabled={isinLoading}>
+              {isinLoading ? "…" : "Lookup"}
+            </Button>
+          </div>
+        </Field>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label={isCrypto ? "Coin symbol" : "Ticker symbol"}>
+          <input
+            value={ticker}
+            onChange={e => setTicker(e.target.value.toUpperCase())}
+            placeholder={isCrypto ? "BTC" : isEtf ? "IWDA.AS" : "NVDA"}
+            style={{ textTransform: "uppercase" }}
+            autoFocus
+          />
+          {isCrypto && (
+            <div className="cf-suggestions">
+              {CRYPTO_SUGGESTIONS.map(s => (
+                <button key={s} className="cf-suggestion-chip" onClick={() => setTicker(s)}>{s}</button>
+              ))}
+            </div>
+          )}
+        </Field>
+        <Field label="Name (optional)">
+          <input value={name} onChange={e => setName(e.target.value)}
+            placeholder={isCrypto ? "Ledger, Binance…" : "Auto-filled from ISIN"} />
+        </Field>
+      </div>
+
+      {existing && !forceSep && (
+        <MergeBanner info={existing} onSeparate={() => setForceSep(true)} />
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label={isCrypto ? "Units held" : "Shares held"} hint="Required">
+          <input type="number" min="0" step="any" value={units}
+            onChange={e => setUnits(e.target.value)} placeholder="0" />
+        </Field>
+        <Field label="Avg cost per unit" hint="Leave 0 if unknown">
+          <input type="number" min="0" step="any" value={avgPrice}
+            onChange={e => setAvgPrice(e.target.value)} placeholder="0" />
+        </Field>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Currency">
+          <Segment options={CCY_OPTIONS} value={currency} onChange={setCurrency} />
+        </Field>
+        <Field label="Acquired as of" hint="Date of acquisition">
+          <input type="date" value={date} onChange={e => setDate(e.target.value)}
+            max={today()} />
+        </Field>
+      </div>
+
+      {!isCrypto && (
+        <Field label="Broker (optional)">
+          <input value={broker} onChange={e => setBroker(e.target.value)} placeholder="IBKR, Saxo…" />
+        </Field>
+      )}
+
+      <Field label="Notes (optional)">
+        <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional notes" />
+      </Field>
+
+      <FormFooter
+        total={total} currency={currency}
+        onCancel={onClose} onSubmit={handleSubmit} isPending={isPending}
+        submitLabel="Add holding"
+      />
+    </div>
+  );
+}
+
+// ── Crypto form (Log a transaction mode) ──────────────────────────────────────
 
 function CryptoForm({ onClose, setError }: { onClose: () => void; setError: (e: string | null) => void }) {
-  const [ticker, setTicker]       = useState("");
-  const [kind, setKind]           = useState<"BUY" | "SELL">("BUY");
-  const [wallet, setWallet]       = useState("");
-  const [units, setUnits]         = useState("");
-  const [price, setPrice]         = useState("");
-  const [currency, setCurrency]   = useState<Currency>("NIS");
-  const [date, setDate]           = useState(today());
-  const [exchange, setExchange]   = useState("");
-  const [notes, setNotes]         = useState("");
-  const [forceSep, setForceSep]   = useState(false);
+  const [ticker, setTicker]     = useState("");
+  const [kind, setKind]         = useState<"BUY" | "SELL">("BUY");
+  const [wallet, setWallet]     = useState("");
+  const [units, setUnits]       = useState("");
+  const [price, setPrice]       = useState("");
+  const [currency, setCurrency] = useState<Currency>("NIS");
+  const [date, setDate]         = useState(today());
+  const [exchange, setExchange] = useState("");
+  const [notes, setNotes]       = useState("");
+  const [forceSep, setForceSep] = useState(false);
 
   const upperTicker = ticker.toUpperCase().trim();
   const checkEnabled = upperTicker.length >= 2 && kind === "BUY" && !forceSep;
@@ -222,7 +410,6 @@ function CryptoForm({ onClose, setError }: { onClose: () => void; setError: (e: 
       setError("Ticker, units, price and date are required"); return;
     }
     try {
-      // If merge target: post transaction directly to existing investment
       let investmentId: number;
       if (existing && !forceSep) {
         investmentId = existing.id;
@@ -255,12 +442,8 @@ function CryptoForm({ onClose, setError }: { onClose: () => void; setError: (e: 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <Field label="Coin symbol">
-        <input
-          value={ticker}
-          onChange={e => setTicker(e.target.value.toUpperCase())}
-          placeholder="BTC"
-          style={{ textTransform: "uppercase" }}
-        />
+        <input value={ticker} onChange={e => setTicker(e.target.value.toUpperCase())}
+          placeholder="BTC" style={{ textTransform: "uppercase" }} />
         <div className="cf-suggestions">
           {CRYPTO_SUGGESTIONS.map(s => (
             <button key={s} className="cf-suggestion-chip" onClick={() => setTicker(s)}>{s}</button>
@@ -287,10 +470,12 @@ function CryptoForm({ onClose, setError }: { onClose: () => void; setError: (e: 
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Units">
-          <input type="number" min="0" step="any" value={units} onChange={e => setUnits(e.target.value)} placeholder="0.1" />
+          <input type="number" min="0" step="any" value={units}
+            onChange={e => setUnits(e.target.value)} placeholder="0.1" />
         </Field>
         <Field label="Price per unit">
-          <input type="number" min="0" step="any" value={price} onChange={e => setPrice(e.target.value)} placeholder="0" />
+          <input type="number" min="0" step="any" value={price}
+            onChange={e => setPrice(e.target.value)} placeholder="0" />
         </Field>
       </div>
 
@@ -312,7 +497,7 @@ function CryptoForm({ onClose, setError }: { onClose: () => void; setError: (e: 
   );
 }
 
-// ── Stock / ETF form ──────────────────────────────────────────────────────────
+// ── Stock / ETF form (Log a transaction mode) ─────────────────────────────────
 
 function StockForm({
   onClose, setError, isEtf,
@@ -399,13 +584,8 @@ function StockForm({
       {isEtf && (
         <Field label="ISIN (optional — auto-fills ticker & kind)">
           <div style={{ display: "flex", gap: 8 }}>
-            <input
-              value={isin}
-              onChange={e => setIsin(e.target.value.toUpperCase())}
-              placeholder="IE00B4L5Y983"
-              style={{ flex: 1 }}
-              onBlur={lookupIsin}
-            />
+            <input value={isin} onChange={e => setIsin(e.target.value.toUpperCase())}
+              placeholder="IE00B4L5Y983" style={{ flex: 1 }} onBlur={lookupIsin} />
             <Button variant="ghost" size="sm" onClick={lookupIsin} disabled={isinLoading}>
               {isinLoading ? "…" : "Lookup"}
             </Button>
@@ -415,12 +595,8 @@ function StockForm({
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Ticker symbol">
-          <input
-            value={ticker}
-            onChange={e => setTicker(e.target.value.toUpperCase())}
-            placeholder={isEtf ? "IWDA.AS" : "NVDA"}
-            style={{ textTransform: "uppercase" }}
-          />
+          <input value={ticker} onChange={e => setTicker(e.target.value.toUpperCase())}
+            placeholder={isEtf ? "IWDA.AS" : "NVDA"} style={{ textTransform: "uppercase" }} />
         </Field>
         <Field label="Name (optional)">
           <input value={name} onChange={e => setName(e.target.value)} placeholder="Auto-filled from ISIN" />
@@ -433,11 +609,9 @@ function StockForm({
 
       {isEtf && (
         <Field label="ETF kind">
-          <select
-            value={etfKind}
+          <select value={etfKind}
             onChange={e => setEtfKind(e.target.value as "accumulating" | "distributing" | "")}
-            className="cf-select"
-          >
+            className="cf-select">
             <option value="">Unknown</option>
             <option value="accumulating">Accumulating (Acc)</option>
             <option value="distributing">Distributing (Dist)</option>
@@ -455,11 +629,13 @@ function StockForm({
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <Field label={isEtf ? "Shares" : "Shares"}>
-          <input type="number" min="0" step="any" value={units} onChange={e => setUnits(e.target.value)} placeholder="10" />
+        <Field label="Shares">
+          <input type="number" min="0" step="any" value={units}
+            onChange={e => setUnits(e.target.value)} placeholder="10" />
         </Field>
         <Field label="Price per share">
-          <input type="number" min="0" step="any" value={price} onChange={e => setPrice(e.target.value)} placeholder="0" />
+          <input type="number" min="0" step="any" value={price}
+            onChange={e => setPrice(e.target.value)} placeholder="0" />
         </Field>
       </div>
 
@@ -481,33 +657,80 @@ function StockForm({
   );
 }
 
-// ── Manual (pension / education / other) form ─────────────────────────────────
+// ── Manual form (pension / education / other) ─────────────────────────────────
+// entryMode = "holding": show full setup fields (balance, monthly_deposit for pension,
+//                         DEPOSIT rows for edu/other)
+// entryMode = "transaction": minimal — just create the account shell
+
+interface DepositRow {
+  _id: string;
+  amount: string;
+  currency: Currency;
+  date: string;
+}
 
 function ManualForm({
-  type, onClose, setError,
-}: { type: AssetType; onClose: () => void; setError: (e: string | null) => void }) {
-  const [name, setName]           = useState("");
-  const [balance, setBalance]     = useState("");
-  const [currency, setCurrency]   = useState<Currency>("NIS");
-  const [liquidDate, setLiqDate]  = useState("");
-  const [date, setDate]           = useState(today());
+  type, onClose, setError, entryMode,
+}: { type: AssetType; onClose: () => void; setError: (e: string | null) => void; entryMode: "holding" | "transaction" }) {
+  const [name, setName]                 = useState("");
+  const [balance, setBalance]           = useState("");
+  const [currency, setCurrency]         = useState<Currency>("NIS");
+  const [liquidDate, setLiqDate]        = useState("");
+  const [date, setDate]                 = useState(today());
+  // Pension-specific
+  const [monthlyDeposit, setMonthlyDep] = useState("");
+  const [depCcy, setDepCcy]             = useState<Currency>("NIS");
+  // Education / Other DEPOSIT rows (holding mode only)
+  const [deposits, setDeposits]         = useState<DepositRow[]>([]);
 
-  const createInv = useCreateInvestment();
-  const isPending = createInv.isPending;
+  const createInv  = useCreateInvestment();
+  const bulkTx     = useBulkTransactions();
+  const isPending  = createInv.isPending || bulkTx.isPending;
+
+  function addDepositRow() {
+    setDeposits(prev => [...prev, { _id: crypto.randomUUID(), amount: "", currency: "NIS", date: today() }]);
+  }
+  function removeDepositRow(id: string) {
+    setDeposits(prev => prev.filter(r => r._id !== id));
+  }
+  function updateDeposit(id: string, field: keyof DepositRow, value: string) {
+    setDeposits(prev => prev.map(r => r._id === id ? { ...r, [field]: value } : r));
+  }
 
   async function handleSubmit() {
     setError(null);
     const cleanName = name.trim();
     if (!cleanName) { setError("Name is required"); return; }
+
+    const md = monthlyDeposit ? Number(monthlyDeposit) : undefined;
+    if (md !== undefined && (isNaN(md) || md < 0)) { setError("Monthly deposit must be a non-negative number"); return; }
+
     try {
-      await createInv.mutateAsync({
+      const inv = await createInv.mutateAsync({
         type,
         name: cleanName,
         initial_balance: balance ? Number(balance) : undefined,
         currency,
         liquid_date: type === "education" && liquidDate ? liquidDate : undefined,
         occurred_at: new Date(date).toISOString(),
+        monthly_deposit: type === "pension" && entryMode === "holding" ? md : undefined,
+        deposit_currency: type === "pension" && entryMode === "holding" ? depCcy : undefined,
       });
+
+      // For education/other in holding mode: add DEPOSIT rows via bulk endpoint
+      if (entryMode === "holding" && (type === "education" || type === "other") && deposits.length > 0) {
+        const validDeposits = deposits.filter(r => r.amount && Number(r.amount) > 0 && r.date);
+        if (validDeposits.length > 0) {
+          const rows: BulkTransactionRow[] = validDeposits.map(r => ({
+            kind: "DEPOSIT" as const,
+            total_amount: Number(r.amount),
+            currency: r.currency,
+            occurred_at: new Date(r.date).toISOString(),
+          }));
+          await bulkTx.mutateAsync({ investment_id: inv.id, transactions: rows });
+        }
+      }
+
       onClose();
     } catch (e) {
       setError((e as Error).message);
@@ -517,34 +740,89 @@ function ManualForm({
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <Field label="Name">
-        <input value={name} onChange={e => setName(e.target.value)} placeholder={
+        <input value={name} onChange={e => setName(e.target.value)} autoFocus placeholder={
           type === "pension" ? "Menora Pension" : type === "education" ? "Education Fund" : "Wine collection"
-        } autoFocus />
+        } />
       </Field>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <Field label="Initial balance (optional)">
-          <input type="number" min="0" step="any" value={balance} onChange={e => setBalance(e.target.value)} placeholder="0" />
+        <Field label={entryMode === "holding" ? "Current balance" : "Initial balance (optional)"}>
+          <input type="number" min="0" step="any" value={balance}
+            onChange={e => setBalance(e.target.value)} placeholder="0" />
         </Field>
         <Field label="Currency">
           <Segment options={CCY_OPTIONS} value={currency} onChange={setCurrency} />
         </Field>
       </div>
 
-      <Field label="Date">
-        <input type="date" value={date} onChange={e => setDate(e.target.value)} />
+      <Field label={entryMode === "holding" ? "Balance date" : "Date"}>
+        <input type="date" value={date} onChange={e => setDate(e.target.value)}
+          max={entryMode === "holding" ? today() : undefined} />
       </Field>
 
+      {/* Pension: monthly deposit fields (holding mode only) */}
+      {type === "pension" && entryMode === "holding" && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <Field label="Monthly deposit" hint="Used to calculate net invested">
+            <input type="number" min="0" step="any" value={monthlyDeposit}
+              onChange={e => setMonthlyDep(e.target.value)} placeholder="0" />
+          </Field>
+          <Field label="Deposit currency">
+            <Segment options={CCY_OPTIONS} value={depCcy} onChange={setDepCcy} />
+          </Field>
+        </div>
+      )}
+
+      {/* Education liquidation date */}
       {type === "education" && (
         <Field label="Liquidation date" hint="When the fund matures">
           <input type="date" value={liquidDate} onChange={e => setLiqDate(e.target.value)} />
         </Field>
       )}
 
+      {/* Education / Other: initial DEPOSIT rows (holding mode only) */}
+      {entryMode === "holding" && (type === "education" || type === "other") && (
+        <div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text-soft)" }}>
+              Initial deposits (optional)
+            </div>
+            <Button variant="ghost" size="sm" icon={<Plus size={13} strokeWidth={2} />} onClick={addDepositRow}>
+              Add deposit
+            </Button>
+          </div>
+          {deposits.map(row => (
+            <div key={row._id} style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto", gap: 8, marginBottom: 8, alignItems: "end" }}>
+              <Field label="Amount">
+                <input type="number" min="0" step="any" value={row.amount}
+                  onChange={e => updateDeposit(row._id, "amount", e.target.value)} placeholder="0" />
+              </Field>
+              <Field label="Ccy">
+                <select className="cf-select" value={row.currency}
+                  onChange={e => updateDeposit(row._id, "currency", e.target.value)}>
+                  <option value="NIS">₪ NIS</option>
+                  <option value="USD">$ USD</option>
+                </select>
+              </Field>
+              <Field label="Date">
+                <input type="date" value={row.date} max={today()}
+                  onChange={e => updateDeposit(row._id, "date", e.target.value)} />
+              </Field>
+              <div style={{ paddingBottom: 2 }}>
+                <button className="cf-iconbtn" style={{ color: "var(--rose)" }}
+                  onClick={() => removeDepositRow(row._id)} title="Remove">
+                  <Trash2 size={14} strokeWidth={1.6} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="cf-modal-actions" style={{ marginTop: 8 }}>
         <Button variant="ghost" onClick={onClose}>Cancel</Button>
         <Button variant="primary" onClick={handleSubmit} disabled={isPending}>
-          {isPending ? "Creating…" : "Create"}
+          {isPending ? "Creating…" : entryMode === "holding" ? "Add holding" : "Create"}
         </Button>
       </div>
     </div>
@@ -556,11 +834,13 @@ function ManualForm({
 function EditMetaForm({
   investment, onClose, setError,
 }: { investment: Investment; onClose: () => void; setError: (e: string | null) => void }) {
-  const [name, setName]         = useState(investment.name);
-  const [broker, setBroker]     = useState(investment.broker ?? "");
-  const [isin, setIsin]         = useState(investment.isin ?? "");
-  const [etfKind, setEtfKind]   = useState(investment.etf_kind ?? "");
-  const [liquidDate, setLiqDate] = useState(investment.liquid_date?.slice(0, 10) ?? "");
+  const [name, setName]           = useState(investment.name);
+  const [broker, setBroker]       = useState(investment.broker ?? "");
+  const [isin, setIsin]           = useState(investment.isin ?? "");
+  const [etfKind, setEtfKind]     = useState(investment.etf_kind ?? "");
+  const [liquidDate, setLiqDate]  = useState(investment.liquid_date?.slice(0, 10) ?? "");
+  const [monthlyDep, setMonthlyDep] = useState(investment.monthly_deposit?.toString() ?? "");
+  const [depCcy, setDepCcy]       = useState<Currency>((investment.deposit_currency as Currency) ?? "NIS");
 
   const editMut  = useEditInvestment();
   const isPending = editMut.isPending;
@@ -575,6 +855,8 @@ function EditMetaForm({
         isin: isin.trim().toUpperCase() || undefined,
         etf_kind: (etfKind || undefined) as "accumulating" | "distributing" | undefined,
         liquid_date: liquidDate || undefined,
+        monthly_deposit: monthlyDep ? Number(monthlyDep) : undefined,
+        deposit_currency: investment.type === "pension" ? depCcy : undefined,
       }});
       onClose();
     } catch (e) {
@@ -616,6 +898,18 @@ function EditMetaForm({
         </Field>
       )}
 
+      {investment.type === "pension" && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <Field label="Monthly deposit" hint="Used to calculate net invested">
+            <input type="number" min="0" step="any" value={monthlyDep}
+              onChange={e => setMonthlyDep(e.target.value)} placeholder="0" />
+          </Field>
+          <Field label="Deposit currency">
+            <Segment options={CCY_OPTIONS} value={depCcy} onChange={setDepCcy} />
+          </Field>
+        </div>
+      )}
+
       <div className="cf-modal-actions" style={{ marginTop: 8 }}>
         <Button variant="ghost" onClick={onClose}>Cancel</Button>
         <Button variant="primary" onClick={handleSubmit} disabled={isPending}>
@@ -629,8 +923,8 @@ function EditMetaForm({
 // ── Shared footer ─────────────────────────────────────────────────────────────
 
 function FormFooter({
-  total, currency, onCancel, onSubmit, isPending,
-}: { total: number; currency: Currency; onCancel: () => void; onSubmit: () => void; isPending: boolean }) {
+  total, currency, onCancel, onSubmit, isPending, submitLabel = "Add transaction",
+}: { total: number; currency: Currency; onCancel: () => void; onSubmit: () => void; isPending: boolean; submitLabel?: string }) {
   return (
     <div className="cf-modal-summary">
       <div>
@@ -640,7 +934,7 @@ function FormFooter({
       <div className="cf-modal-actions">
         <Button variant="ghost" onClick={onCancel}>Cancel</Button>
         <Button variant="primary" onClick={onSubmit} disabled={isPending}>
-          {isPending ? "Saving…" : "Add transaction"}
+          {isPending ? "Saving…" : submitLabel}
         </Button>
       </div>
     </div>

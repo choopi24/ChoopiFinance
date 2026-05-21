@@ -3,6 +3,7 @@ import { getDb } from "../db/init.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { ok, fail } from "../middleware/respond.js";
 import { enrichInvestment, getUsdNisRate } from "../services/portfolio.js";
+import { recomputeRealized } from "../services/fifo.js";
 
 export const investmentsRouter = Router();
 investmentsRouter.use(requireAuth);
@@ -57,6 +58,7 @@ investmentsRouter.post("/", (req, res) => {
       type, name, ticker, isin, broker, etf_kind, liquid_date,
       initial_balance, currency = "NIS", occurred_at,
       monthly_deposit, deposit_currency = "NIS",
+      holding,
     } = req.body as Record<string, unknown>;
 
     if (!type || !VALID_TYPES.has(type as string)) {
@@ -98,6 +100,29 @@ investmentsRouter.post("/", (req, res) => {
         currency ?? "NIS",
         occurred_at ?? new Date().toISOString()
       );
+    }
+
+    // For market types: create a synthetic BUY if the caller supplied a holding object.
+    // This keeps the FIFO engine consistent — the investment and its initial lot
+    // are written atomically in the same request.
+    if (MARKET_TYPES.has(type as string) && holding != null) {
+      const h = holding as Record<string, unknown>;
+      const hUnits = Number(h.units);
+      const hPrice = Number(h.avg_price ?? 0);
+      const hCcy   = String(h.currency ?? "USD");
+      const hDate  = String(h.as_of ?? new Date().toISOString());
+
+      if (isNaN(hUnits) || hUnits <= 0) return fail(res, "holding.units must be a positive number");
+      if (isNaN(hPrice) || hPrice < 0)  return fail(res, "holding.avg_price must be non-negative");
+      if (new Date(hDate) > new Date())  return fail(res, "holding.as_of cannot be in the future");
+
+      db.prepare(
+        `INSERT INTO transactions
+           (investment_id, user_id, kind, units, price_per_unit, total_amount, currency, occurred_at, notes)
+         VALUES (?, ?, 'BUY', ?, ?, ?, ?, ?, 'Initial holding (synthetic)')`
+      ).run(investmentId, req.user!.id, hUnits, hPrice, hUnits * hPrice, hCcy, hDate);
+
+      recomputeRealized(db, investmentId);
     }
 
     const inv = db.prepare(`${INV_SELECT} WHERE id = ?`).get(investmentId);
