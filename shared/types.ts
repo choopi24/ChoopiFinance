@@ -29,8 +29,25 @@ export interface Investment {
   monthly_deposit?: number | null;
   /** Currency of monthly_deposit (pension only). Defaults to 'NIS'. */
   deposit_currency?: string;
+  /** Expected annual return as a decimal (e.g. 0.07 = 7%/yr). null → use DEFAULT_ANNUAL_RETURNS[type]. */
+  expected_annual_return?: number | null;
+  /** Recurring monthly contribution used in future-value projection. null/0 = none. */
+  monthly_contribution?: number | null;
   created_at: string;
 }
+
+/**
+ * Per-type fallback annual returns (decimal) used for future-value projection
+ * when an investment's expected_annual_return is null.
+ */
+export const DEFAULT_ANNUAL_RETURNS: Record<AssetType, number> = {
+  pension:   0.04,
+  education: 0.04,
+  etf:       0.07,
+  stock:     0.08,
+  crypto:    0.10,
+  other:     0.05,
+};
 
 export interface Transaction {
   id: number;

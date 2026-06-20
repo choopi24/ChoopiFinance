@@ -126,7 +126,7 @@ async function refreshStockSingle(
   assetType: "stock" | "etf"
 ): Promise<void> {
   try {
-    const quote = await yahooFinance.quote(ticker) as { regularMarketPrice?: number; currency?: string };
+    const quote = await yahooFinance.quote(ticker, {}, { validateResult: false }) as { regularMarketPrice?: number; currency?: string };
     const price = quote.regularMarketPrice;
     const currency = (quote.currency ?? "USD").toUpperCase();
     if (price == null) return;

@@ -4,6 +4,8 @@ import { requireAuth } from "../middleware/requireAuth.js";
 import { ok, fail } from "../middleware/respond.js";
 import { recomputeRealized } from "../services/fifo.js";
 import { takeSnapshot } from "../services/snapshot.js";
+import { refreshPrice } from "../services/prices.js";
+import { getRateSync } from "../services/fx.js";
 
 export const transactionsRouter = Router();
 transactionsRouter.use(requireAuth);
@@ -55,7 +57,7 @@ transactionsRouter.get("/", (req, res) => {
 });
 
 // POST /api/transactions — create BUY / SELL / DIV / UPDATE
-transactionsRouter.post("/", (req, res) => {
+transactionsRouter.post("/", async (req, res) => {
   try {
     const db = getDb();
     const {
@@ -83,11 +85,45 @@ transactionsRouter.post("/", (req, res) => {
       return fail(res, `${inv.type} investments use UPDATE / DEPOSIT, not ${kind}`);
     }
 
-    // Compute total_amount if not provided (BUY/SELL)
+    // Normalised, possibly-derived position fields.
+    let u = units != null && units !== "" ? Number(units) : null;
+    let pUnit = price_per_unit != null && price_per_unit !== "" ? Number(price_per_unit) : null;
+    let txCurrency = currency as string;
     let effectiveTotal = total_amount != null ? Number(total_amount) : null;
-    if (effectiveTotal == null && units != null && price_per_unit != null) {
-      effectiveTotal = Number(units) * Number(price_per_unit);
+    if (effectiveTotal == null && u != null && pUnit != null) {
+      effectiveTotal = u * pUnit;
     }
+
+    // ── Derive missing position fields from the live price (market BUY) ──────
+    // Two convenience entry modes, so the user need not know the share count:
+    //   • amount-only  ("$5,000 in VOO")  → units  = amount / live price
+    //   • units-only   ("10 shares, cost unknown") → cost = units * live price
+    // Either way the position then tracks the live market like any FIFO holding.
+    const amountOnly = u == null && pUnit == null && effectiveTotal != null && effectiveTotal > 0;
+    const unitsOnly  = u != null && u > 0 && pUnit == null && effectiveTotal == null;
+    if (isMarket && kind === "BUY" && (amountOnly || unitsOnly)) {
+      const pr = await refreshPrice(db, Number(investment_id));
+      if (!pr || !(pr.price > 0)) {
+        return fail(res, "Couldn't fetch a live price to value this holding — enter both units and price, or try again shortly.");
+      }
+      pUnit = pr.price;
+      if (amountOnly) {
+        // Convert the entered amount into the asset's native currency if they differ (NIS/USD only).
+        let amtNative = effectiveTotal as number;
+        if (txCurrency !== pr.currency) {
+          const rate = getRateSync(db, req.user!.id).rate; // USD→NIS
+          if (txCurrency === "NIS" && pr.currency === "USD") amtNative = (effectiveTotal as number) / rate;
+          else if (txCurrency === "USD" && pr.currency === "NIS") amtNative = (effectiveTotal as number) * rate;
+        }
+        u = amtNative / pr.price;
+        effectiveTotal = amtNative;
+      } else {
+        // units-only: cost basis = units * live native price
+        effectiveTotal = (u as number) * pr.price;
+      }
+      txCurrency = pr.currency;
+    }
+
     if (effectiveTotal == null || isNaN(effectiveTotal)) {
       return fail(res, "total_amount or (units + price_per_unit) required");
     }
@@ -110,8 +146,8 @@ transactionsRouter.post("/", (req, res) => {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       investment_id, req.user!.id, kind,
-      units ?? null, price_per_unit ?? null, effectiveTotal,
-      currency, wallet_id ?? null, occurred_at, notes ?? null,
+      u ?? null, pUnit ?? null, effectiveTotal,
+      txCurrency, wallet_id ?? null, occurred_at, notes ?? null,
       kind === "BUY" ? (fx_rate_at_buy ?? null) : null
     );
 

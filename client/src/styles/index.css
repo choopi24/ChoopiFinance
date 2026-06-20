@@ -1,13 +1,16 @@
-/* 1. Fonts — bundled locally via @fontsource packages
-   Manrope        → UI / body (clean, premium geometric sans)
-   Fraunces       → display headings (characterful variable serif, opsz axis)
-   IBM Plex Mono  → numbers / tabular data (professional figures) */
-@import "@fontsource-variable/manrope";
-@import "@fontsource-variable/fraunces/standard.css";
-@import "@fontsource-variable/fraunces/standard-italic.css";
+/* 1. Fonts — IBM Plex superfamily, bundled locally via @fontsource (offline)
+   IBM Plex Sans   → all UI, body, headings  (variable build)
+   IBM Plex Mono   → all numeric output       (static weights — no variable build published)
+   IBM Plex Serif  → display / wordmark only  (static weights — no variable build published) */
+@import "@fontsource-variable/ibm-plex-sans";
 @import "@fontsource/ibm-plex-mono/400.css";
 @import "@fontsource/ibm-plex-mono/500.css";
 @import "@fontsource/ibm-plex-mono/600.css";
+@import "@fontsource/ibm-plex-mono/700.css";
+@import "@fontsource/ibm-plex-serif/400.css";
+@import "@fontsource/ibm-plex-serif/500.css";
+@import "@fontsource/ibm-plex-serif/600.css";
+@import "@fontsource/ibm-plex-serif/700.css";
 
 /* 2. Design tokens (CSS custom properties, light/dark themes) */
 @import "./tokens.css";
@@ -78,12 +81,17 @@ body {
 .mono {
   font-family: var(--font-mono);
   font-feature-settings: "tnum" 1, "zero" 1;
+  font-variant-numeric: tabular-nums;
+}
+/* Reusable: tabular figures for proportional (sans) numbers rendered in columns
+   — KPIs, table cells, ledger amounts, projection figures. Keeps digits aligned. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "zero" 1;
 }
 .serif {
   font-family: var(--font-serif);
-  /* Display optical size, refined (non-wonky) for an elegant, premium feel */
-  font-variation-settings: "opsz" 144, "SOFT" 0, "WONK" 0;
-  letter-spacing: -0.015em;
+  letter-spacing: -0.01em;
 }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }

@@ -1,4 +1,5 @@
 import { Router } from "express";
+import rateLimit from "express-rate-limit";
 import bcrypt from "bcrypt";
 import { getDb } from "../db/init.js";
 import { signToken, setAuthCookie, clearAuthCookie, requireAuth } from "../middleware/requireAuth.js";
@@ -7,8 +8,17 @@ export const authRouter = Router();
 
 const BCRYPT_ROUNDS = 12;
 
+// Throttle credential endpoints: 10 attempts / 15 min / IP.
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many attempts, please try again later" },
+});
+
 // POST /api/auth/register
-authRouter.post("/register", async (req, res) => {
+authRouter.post("/register", authLimiter, async (req, res) => {
   const { username, password } = req.body as { username?: string; password?: string };
 
   if (!username || typeof username !== "string" || username.trim().length < 2) {
@@ -44,7 +54,7 @@ authRouter.post("/register", async (req, res) => {
 });
 
 // POST /api/auth/login
-authRouter.post("/login", async (req, res) => {
+authRouter.post("/login", authLimiter, async (req, res) => {
   const { username, password, stay_signed_in = false } = req.body as {
     username?: string; password?: string; stay_signed_in?: boolean;
   };

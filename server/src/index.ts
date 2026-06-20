@@ -1,4 +1,5 @@
 import express from "express";
+import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import cors from "cors";
 import cron from "node-cron";
@@ -27,6 +28,10 @@ import { getRate } from "./services/fx.js";
 const app = express();
 const PORT = Number(process.env.PORT ?? 3001);
 const HOST = "0.0.0.0";
+
+// Security headers. CSP is left off here because the bundled SPA relies on
+// inline styles; tighten it separately if a policy is introduced.
+app.use(helmet({ contentSecurityPolicy: false }));
 
 app.use(cors({
   origin: (_origin, cb) => cb(null, true), // LAN — security handled by auth cookie

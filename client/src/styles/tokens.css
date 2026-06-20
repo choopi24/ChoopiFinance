@@ -2,9 +2,9 @@
 
 :root {
   /* Typography */
-  --font-sans: "Manrope Variable", system-ui, -apple-system, sans-serif;
+  --font-sans: "IBM Plex Sans Variable", "IBM Plex Sans", system-ui, -apple-system, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
-  --font-serif: "Fraunces Variable", "Iowan Old Style", Georgia, serif;
+  --font-serif: "IBM Plex Serif", Georgia, serif;
 
   /* Type scale */
   --text-xs: 11px;

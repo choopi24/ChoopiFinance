@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { Plus, RotateCw, Eye, EyeOff, Edit2, Trash2, FileText, RefreshCw, Upload, History } from "lucide-react";
+import { Plus, RotateCw, Eye, EyeOff, Edit2, Trash2, FileText, RefreshCw, Upload, History, TrendingUp } from "lucide-react";
 import { EmptyState } from "../components/EmptyState";
 import { CsvImportModal } from "../components/CsvImportModal";
 import { useAuth } from "../context/AuthContext";
@@ -96,9 +96,10 @@ interface RowProps {
   onDelete: (id: number) => void;
   onUpdateBalance: (inv: Investment) => void;
   onBackfill: (inv: Investment) => void;
+  onProject: (inv: Investment) => void;
 }
 
-function InvRow({ inv, currency, fxRate, onEdit, onDelete, onUpdateBalance, onBackfill }: RowProps) {
+function InvRow({ inv, currency, fxRate, onEdit, onDelete, onUpdateBalance, onBackfill, onProject }: RowProps) {
   const value   = toDisplayCurrency(inv.current_value_nis, currency, fxRate);
   const cost    = toDisplayCurrency(inv.cost_basis_nis, currency, fxRate);
   const unreal  = toDisplayCurrency(inv.unrealized_pl_nis, currency, fxRate);
@@ -171,6 +172,15 @@ function InvRow({ inv, currency, fxRate, onEdit, onDelete, onUpdateBalance, onBa
               <History size={14} strokeWidth={1.6} />
             </button>
           )}
+          {!isClosed && (
+            <button
+              className="cf-iconbtn"
+              title="Projection"
+              onClick={() => onProject(inv)}
+            >
+              <TrendingUp size={14} strokeWidth={1.6} />
+            </button>
+          )}
           <button className="cf-iconbtn" title="Edit" onClick={() => onEdit(inv)}>
             <Edit2 size={14} strokeWidth={1.6} />
           </button>
@@ -197,7 +207,7 @@ function InvRow({ inv, currency, fxRate, onEdit, onDelete, onUpdateBalance, onBa
 
 // ── Mobile card ───────────────────────────────────────────────────────────────
 
-function InvCard({ inv, currency, fxRate, onUpdateBalance, onBackfill }: Omit<RowProps, "onEdit" | "onDelete">) {
+function InvCard({ inv, currency, fxRate, onUpdateBalance, onBackfill, onProject }: Omit<RowProps, "onEdit" | "onDelete">) {
   const value  = toDisplayCurrency(inv.current_value_nis, currency, fxRate);
   const unreal = toDisplayCurrency(inv.unrealized_pl_nis, currency, fxRate);
   const isPos  = inv.unrealized_pl_nis >= 0;
@@ -230,6 +240,9 @@ function InvCard({ inv, currency, fxRate, onUpdateBalance, onBackfill }: Omit<Ro
             <button className="cf-iconbtn" title="Backfill history" onClick={() => onBackfill(inv)}>
               <History size={13} strokeWidth={1.6} />
             </button>
+            <button className="cf-iconbtn" title="Projection" onClick={() => onProject(inv)}>
+              <TrendingUp size={13} strokeWidth={1.6} />
+            </button>
           </div>
         )}
       </div>
@@ -254,10 +267,17 @@ export default function Investments() {
   const [deleteId, setDeleteId]       = useState<number | null>(null);
   const [balanceInv, setBalanceInv]   = useState<Investment | null>(null);
   const [backfillInv, setBackfillInv] = useState<Investment | null>(null);
+  // Track the projection target by id (not a captured object) so the panel always
+  // reads the live row — its PV (current_value_nis) then auto-updates after deposits/BUY/UPDATE.
+  const [projectionId, setProjectionId] = useState<number | null>(null);
 
   const { data: investments = [], isLoading } = useInvestments(showClosed);
   // Use live rate from useFxRate → server-embedded rate from enriched investments → documented fallback
   const fxRate = fx?.rate ?? investments[0]?.fx_rate_used ?? 3.7;
+
+  const projectionInv = projectionId != null
+    ? investments.find(i => i.id === projectionId) ?? null
+    : null;
 
   // Filter + counts
   const filtered = useMemo(() => {
@@ -407,6 +427,7 @@ export default function Investments() {
                     onDelete={setDeleteId}
                     onUpdateBalance={setBalanceInv}
                     onBackfill={setBackfillInv}
+                    onProject={inv => setProjectionId(inv.id)}
                   />
                 ))}
               </tbody>
@@ -423,6 +444,7 @@ export default function Investments() {
                 fxRate={fxRate}
                 onUpdateBalance={setBalanceInv}
                 onBackfill={setBackfillInv}
+                onProject={inv => setProjectionId(inv.id)}
               />
             ))}
           </div>
@@ -443,6 +465,15 @@ export default function Investments() {
         <BackfillModal
           investment={backfillInv}
           onClose={() => setBackfillInv(null)}
+        />
+      )}
+
+      {projectionInv && (
+        <ProjectionPanelLazy
+          investment={projectionInv}
+          currency={currency as Currency}
+          fxRate={fxRate}
+          onClose={() => setProjectionId(null)}
         />
       )}
 
@@ -467,6 +498,32 @@ import { lazy, Suspense } from "react";
 const InvestmentModalComponent = lazy(() =>
   import("../components/InvestmentModal").then(m => ({ default: m.InvestmentModal }))
 );
+const ProjectionPanelComponent = lazy(() =>
+  import("../components/ProjectionPanel").then(m => ({ default: m.ProjectionPanel }))
+);
+
+function ProjectionPanelLazy({
+  investment,
+  currency,
+  fxRate,
+  onClose,
+}: {
+  investment: Investment;
+  currency: Currency;
+  fxRate: number;
+  onClose: () => void;
+}) {
+  return (
+    <Suspense fallback={null}>
+      <ProjectionPanelComponent
+        investment={investment}
+        currency={currency}
+        fxRate={fxRate}
+        onClose={onClose}
+      />
+    </Suspense>
+  );
+}
 
 function InvestmentModalLazy({
   mode,

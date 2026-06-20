@@ -2,7 +2,31 @@ import type { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { getDb } from "../db/init.js";
 
-const JWT_SECRET = process.env.JWT_SECRET ?? "choopi-dev-secret-change-in-prod";
+const DEV_JWT_SECRET = "choopi-dev-secret-change-in-prod";
+
+/**
+ * Resolve the JWT secret. In production a real secret is mandatory:
+ * the process refuses to start if JWT_SECRET is unset or still the dev default.
+ * Outside production the dev fallback is allowed for convenience.
+ */
+function resolveJwtSecret(): string {
+  const secret = process.env.JWT_SECRET;
+  if (process.env.NODE_ENV === "production") {
+    if (!secret || secret === DEV_JWT_SECRET) {
+      throw new Error(
+        "JWT_SECRET must be set to a non-default value in production. " +
+          "Refusing to start with an unset or development secret."
+      );
+    }
+    return secret;
+  }
+  return secret ?? DEV_JWT_SECRET;
+}
+
+const JWT_SECRET = resolveJwtSecret();
+
+/** Cookie secure flag — opt in via COOKIE_SECURE=true (e.g. when served over HTTPS). */
+const COOKIE_SECURE = process.env.COOKIE_SECURE === "true";
 
 export interface AuthUser {
   id: number;
@@ -52,7 +76,7 @@ export function setAuthCookie(res: Response, token: string, staySignedIn = false
   res.cookie("cf_token", token, {
     httpOnly: true,
     sameSite: "lax",
-    secure: false, // LAN context — no HTTPS
+    secure: COOKIE_SECURE, // env-driven: COOKIE_SECURE=true when served over HTTPS
     maxAge: (staySignedIn ? 90 : 30) * 24 * 60 * 60 * 1000,
     path: "/",
   });

@@ -40,7 +40,7 @@ export default function Hello() {
           Choopi Finance · scaffold
         </span>
 
-        {/* Hero headline — Instrument Serif italic + brand gradient */}
+        {/* Hero headline — IBM Plex Serif italic + brand gradient */}
         <h1
           style={{
             fontFamily: "var(--font-serif)",

@@ -4,6 +4,11 @@ import { requireAuth } from "../middleware/requireAuth.js";
 import { ok, fail } from "../middleware/respond.js";
 import { enrichInvestment, getUsdNisRate } from "../services/portfolio.js";
 import { recomputeRealized } from "../services/fifo.js";
+import {
+  validateExpectedAnnualReturn,
+  validateMonthlyContribution,
+  isError,
+} from "./projectionValidation.js";
 
 export const investmentsRouter = Router();
 investmentsRouter.use(requireAuth);
@@ -16,7 +21,8 @@ const VALID_TYPES   = new Set([...MARKET_TYPES, ...MANUAL_TYPES]);
 
 const INV_SELECT = `
   SELECT id, user_id, type, name, ticker, isin, broker, etf_kind,
-         liquid_date, closed_at, deleted_at, monthly_deposit, deposit_currency, created_at
+         liquid_date, closed_at, deleted_at, monthly_deposit, deposit_currency,
+         expected_annual_return, monthly_contribution, created_at
   FROM investments
 `;
 
@@ -145,7 +151,8 @@ investmentsRouter.patch("/:id", (req, res) => {
     if (!inv) return fail(res, "Investment not found", 404);
 
     const allowed = ["name", "ticker", "isin", "broker", "etf_kind", "liquid_date",
-                     "monthly_deposit", "deposit_currency"];
+                     "monthly_deposit", "deposit_currency",
+                     "expected_annual_return", "monthly_contribution"];
     const updates: string[] = [];
     const values: unknown[] = [];
 
@@ -159,6 +166,16 @@ investmentsRouter.patch("/:id", (req, res) => {
         updates.push("monthly_deposit = ?");
         const v = req.body[key];
         values.push(v != null && v !== "" ? Number(v) : null);
+      } else if (key === "expected_annual_return") {
+        const r = validateExpectedAnnualReturn(req.body[key]);
+        if (isError(r)) return fail(res, r.error);
+        updates.push("expected_annual_return = ?");
+        values.push(r.value);
+      } else if (key === "monthly_contribution") {
+        const r = validateMonthlyContribution(req.body[key]);
+        if (isError(r)) return fail(res, r.error);
+        updates.push("monthly_contribution = ?");
+        values.push(r.value);
       } else {
         updates.push(`${key} = ?`);
         values.push(req.body[key] ?? null);

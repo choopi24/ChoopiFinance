@@ -19,6 +19,9 @@ export interface Investment {
   // Pension deposit model
   monthly_deposit: number | null;
   deposit_currency: string;
+  // Future-value projection inputs
+  expected_annual_return: number | null;
+  monthly_contribution: number | null;
   // Position (from enrichment)
   remaining_units: number;
   cost_basis_nis: number;
@@ -67,6 +70,27 @@ export function useInvestments(includeClosed = false) {
   });
 }
 
+export interface SymbolHit {
+  symbol: string;
+  name: string;
+  type: "stock" | "etf" | "crypto";
+  currency: string | null;
+  exchange: string | null;
+}
+
+/** Typeahead search for tickers/coins (autocomplete in the add form). */
+export function useSymbolSearch(query: string, type: string, enabled: boolean) {
+  return useQuery<SymbolHit[]>({
+    queryKey: ["lookup", "search", type, query],
+    queryFn: () =>
+      api.get<ApiOk<SymbolHit[]>>(
+        `/lookup/search?q=${encodeURIComponent(query)}&type=${type}`
+      ).then(r => r.data),
+    enabled: enabled && query.trim().length >= 2,
+    staleTime: 60_000,
+  });
+}
+
 export function useCheckExisting(ticker: string, type: string, enabled: boolean) {
   return useQuery<ExistingCheck | null>({
     queryKey: ["investments", "check-existing", ticker, type],
@@ -105,6 +129,8 @@ export interface CreateInvestmentBody {
   occurred_at?: string;
   monthly_deposit?: number;
   deposit_currency?: string;
+  expected_annual_return?: number | null;
+  monthly_contribution?: number | null;
   /** When present for market types, creates a synthetic BUY in the same server request. */
   holding?: {
     units: number;

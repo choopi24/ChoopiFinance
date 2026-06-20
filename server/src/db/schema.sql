@@ -35,6 +35,9 @@ CREATE TABLE IF NOT EXISTS investments (
   -- Pension deposit model
   monthly_deposit  REAL,
   deposit_currency TEXT    NOT NULL DEFAULT 'NIS',
+  -- Future-value projection inputs
+  expected_annual_return REAL,
+  monthly_contribution   REAL,
   created_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 

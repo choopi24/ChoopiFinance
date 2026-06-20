@@ -4,6 +4,7 @@ import { X, ArrowLeft, GitMerge, Plus, Trash2 } from "lucide-react";
 import { TypeCard } from "./TypeCard";
 import { Button } from "./Button";
 import { Segment } from "./Segment";
+import { TickerAutocomplete } from "./TickerAutocomplete";
 import {
   useCreateInvestment, useAddTransaction, useEditInvestment,
   useCheckExisting, useBulkTransactions,
@@ -11,7 +12,7 @@ import {
 import { api } from "../lib/api";
 import { fmt } from "../lib/fmt";
 import type { AssetType, Currency } from "@choopi/shared";
-import type { Investment, BulkTransactionRow } from "../hooks/useInvestments";
+import type { Investment, BulkTransactionRow, SymbolHit } from "../hooks/useInvestments";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -223,8 +224,9 @@ function HoldingMarketForm({ type, onClose, setError }: HoldingMarketFormProps) 
   const [name, setName]         = useState("");
   const [isin, setIsin]         = useState("");
   const [isinLoading, setIsinLoading] = useState(false);
-  const [units, setUnits]       = useState("");
-  const [avgPrice, setAvgPrice] = useState("");
+  const [amount, setAmount]     = useState("");   // money invested (primary path)
+  const [units, setUnits]       = useState("");   // optional exact share count
+  const [avgPrice, setAvgPrice] = useState("");   // optional, paired with units
   const [currency, setCurrency] = useState<Currency>("USD");
   const [date, setDate]         = useState(today());
   const [broker, setBroker]     = useState("");
@@ -238,6 +240,13 @@ function HoldingMarketForm({ type, onClose, setError }: HoldingMarketFormProps) 
   const createInv = useCreateInvestment();
   const addTx     = useAddTransaction();
   const isPending = createInv.isPending || addTx.isPending;
+
+  // Fill symbol + name + native currency when a suggestion is picked.
+  function applyHit(h: SymbolHit) {
+    setTicker(h.symbol.toUpperCase());
+    if (!name.trim()) setName(h.name);
+    if (h.currency === "USD" || h.currency === "NIS") setCurrency(h.currency as Currency);
+  }
 
   async function lookupIsin() {
     if (!isin || isin.length < 12) return;
@@ -258,34 +267,59 @@ function HoldingMarketForm({ type, onClose, setError }: HoldingMarketFormProps) 
   async function handleSubmit() {
     setError(null);
     if (!upperTicker) { setError("Ticker is required"); return; }
-    const u = Number(units);
-    const p = Number(avgPrice || 0);
-    if (!units || isNaN(u) || u <= 0) { setError("Units held must be a positive number"); return; }
-    if (isNaN(p) || p < 0)            { setError("Average cost cannot be negative"); return; }
     if (!date || new Date(date) > new Date()) { setError("Date cannot be in the future"); return; }
+
+    const u   = units !== "" ? Number(units) : null;
+    const amt = amount !== "" ? Number(amount) : null;
+    const p   = avgPrice !== "" ? Number(avgPrice) : null;
+
+    const hasUnits  = u != null && u > 0;
+    const hasAmount = amt != null && amt > 0;
+    if (!hasUnits && !hasAmount) {
+      setError("Enter the amount you invested, or the number of units you hold."); return;
+    }
+    if (u != null && (isNaN(u) || u < 0))   { setError("Units must be a non-negative number"); return; }
+    if (amt != null && (isNaN(amt) || amt < 0)) { setError("Amount must be a non-negative number"); return; }
+    if (p != null && (isNaN(p) || p < 0))   { setError("Average cost cannot be negative"); return; }
 
     const asOf = new Date(date).toISOString();
     try {
+      // Resolve target investment (existing merge target, or a fresh shell).
+      let investmentId: number;
       if (existing && !forceSep) {
-        // Merge into existing investment: post a direct BUY transaction
-        await addTx.mutateAsync({
-          investment_id: existing.id,
-          kind: "BUY",
-          units: u,
-          price_per_unit: p,
-          total_amount: u * p,
-          currency,
-          occurred_at: asOf,
-          notes: notes.trim() || "Initial holding (synthetic)",
-        });
+        investmentId = existing.id;
       } else {
-        await createInv.mutateAsync({
+        const inv = await createInv.mutateAsync({
           type,
           name: name.trim() || upperTicker,
           ticker: upperTicker,
           isin: isin.toUpperCase() || undefined,
           broker: broker.trim() || undefined,
-          holding: { units: u, avg_price: p, currency, as_of: asOf },
+        });
+        investmentId = inv.id;
+      }
+
+      if (hasUnits) {
+        // Exact entry. If avg cost is omitted the server fills it from the live price.
+        await addTx.mutateAsync({
+          investment_id: investmentId,
+          kind: "BUY",
+          units: u!,
+          price_per_unit: p ?? undefined,
+          total_amount: p != null ? u! * p : undefined,
+          currency,
+          occurred_at: asOf,
+          notes: notes.trim() || "Initial holding",
+        });
+      } else {
+        // Amount-only: the server converts the money into shares at the live price.
+        await addTx.mutateAsync({
+          investment_id: investmentId,
+          kind: "BUY",
+          total_amount: amt!,
+          currency,
+          occurred_at: asOf,
+          notes: notes.trim() || "Initial holding (by amount)",
         });
       }
       onClose();
@@ -294,7 +328,10 @@ function HoldingMarketForm({ type, onClose, setError }: HoldingMarketFormProps) 
     }
   }
 
-  const total = Number(units || 0) * Number(avgPrice || 0);
+  // Footer total: show the amount, or units×price when entered that way.
+  const total = amount !== ""
+    ? Number(amount || 0)
+    : Number(units || 0) * Number(avgPrice || 0);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -316,12 +353,13 @@ function HoldingMarketForm({ type, onClose, setError }: HoldingMarketFormProps) 
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <Field label={isCrypto ? "Coin symbol" : "Ticker symbol"}>
-          <input
+        <Field label={isCrypto ? "Coin symbol" : "Ticker symbol"} hint="Type to search">
+          <TickerAutocomplete
+            type={type as "stock" | "etf" | "crypto"}
             value={ticker}
-            onChange={e => setTicker(e.target.value.toUpperCase())}
-            placeholder={isCrypto ? "BTC" : isEtf ? "IWDA.AS" : "NVDA"}
-            style={{ textTransform: "uppercase" }}
+            onChange={setTicker}
+            onSelect={applyHit}
+            placeholder={isCrypto ? "BTC, eth…" : isEtf ? "VOO, iShares…" : "NVDA, Apple…"}
             autoFocus
           />
           {isCrypto && (
@@ -334,7 +372,7 @@ function HoldingMarketForm({ type, onClose, setError }: HoldingMarketFormProps) 
         </Field>
         <Field label="Name (optional)">
           <input value={name} onChange={e => setName(e.target.value)}
-            placeholder={isCrypto ? "Ledger, Binance…" : "Auto-filled from ISIN"} />
+            placeholder="Auto-filled from search" />
         </Field>
       </div>
 
@@ -342,32 +380,40 @@ function HoldingMarketForm({ type, onClose, setError }: HoldingMarketFormProps) 
         <MergeBanner info={existing} onSeparate={() => setForceSep(true)} />
       )}
 
+      {/* Primary: add by money invested */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <Field label={isCrypto ? "Units held" : "Shares held"} hint="Required">
-          <input type="number" min="0" step="any" value={units}
-            onChange={e => setUnits(e.target.value)} placeholder="0" />
+        <Field label="Amount invested" hint="We convert this to shares at the live price">
+          <input type="number" min="0" step="any" value={amount}
+            onChange={e => setAmount(e.target.value)} placeholder="e.g. 5000" />
         </Field>
-        <Field label="Avg cost per unit" hint="Leave 0 if unknown">
+        <Field label="Currency">
+          <Segment options={CCY_OPTIONS} value={currency} onChange={setCurrency} />
+        </Field>
+      </div>
+
+      {/* Optional precise entry */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label={isCrypto ? "Units held (optional)" : "Shares held (optional)"} hint="Leave blank to add by amount">
+          <input type="number" min="0" step="any" value={units}
+            onChange={e => setUnits(e.target.value)} placeholder="—" />
+        </Field>
+        <Field label="Avg cost per unit (optional)" hint="Blank = use live price">
           <input type="number" min="0" step="any" value={avgPrice}
-            onChange={e => setAvgPrice(e.target.value)} placeholder="0" />
+            onChange={e => setAvgPrice(e.target.value)} placeholder="—" />
         </Field>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <Field label="Currency">
-          <Segment options={CCY_OPTIONS} value={currency} onChange={setCurrency} />
-        </Field>
         <Field label="Acquired as of" hint="Date of acquisition">
           <input type="date" value={date} onChange={e => setDate(e.target.value)}
             max={today()} />
         </Field>
+        {!isCrypto && (
+          <Field label="Broker (optional)">
+            <input value={broker} onChange={e => setBroker(e.target.value)} placeholder="IBKR, Saxo…" />
+          </Field>
+        )}
       </div>
-
-      {!isCrypto && (
-        <Field label="Broker (optional)">
-          <input value={broker} onChange={e => setBroker(e.target.value)} placeholder="IBKR, Saxo…" />
-        </Field>
-      )}
 
       <Field label="Notes (optional)">
         <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional notes" />
@@ -441,9 +487,14 @@ function CryptoForm({ onClose, setError }: { onClose: () => void; setError: (e: 
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <Field label="Coin symbol">
-        <input value={ticker} onChange={e => setTicker(e.target.value.toUpperCase())}
-          placeholder="BTC" style={{ textTransform: "uppercase" }} />
+      <Field label="Coin symbol" hint="Type to search">
+        <TickerAutocomplete
+          type="crypto"
+          value={ticker}
+          onChange={setTicker}
+          onSelect={h => setTicker(h.symbol.toUpperCase())}
+          placeholder="BTC, eth…"
+        />
         <div className="cf-suggestions">
           {CRYPTO_SUGGESTIONS.map(s => (
             <button key={s} className="cf-suggestion-chip" onClick={() => setTicker(s)}>{s}</button>
@@ -594,12 +645,21 @@ function StockForm({
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <Field label="Ticker symbol">
-          <input value={ticker} onChange={e => setTicker(e.target.value.toUpperCase())}
-            placeholder={isEtf ? "IWDA.AS" : "NVDA"} style={{ textTransform: "uppercase" }} />
+        <Field label="Ticker symbol" hint="Type to search">
+          <TickerAutocomplete
+            type={isEtf ? "etf" : "stock"}
+            value={ticker}
+            onChange={setTicker}
+            onSelect={h => {
+              setTicker(h.symbol.toUpperCase());
+              if (!name.trim()) setName(h.name);
+              if (h.currency === "USD" || h.currency === "NIS") setCurrency(h.currency as Currency);
+            }}
+            placeholder={isEtf ? "VOO, iShares…" : "NVDA, Apple…"}
+          />
         </Field>
         <Field label="Name (optional)">
-          <input value={name} onChange={e => setName(e.target.value)} placeholder="Auto-filled from ISIN" />
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="Auto-filled from search" />
         </Field>
       </div>
 

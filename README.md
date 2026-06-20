@@ -12,7 +12,7 @@ A locally-hosted, LAN-accessible personal finance tracker.
 | Auth      | JWT in httpOnly cookie                            |
 | Data sync | TanStack React Query                              |
 | Icons     | Lucide React                                      |
-| Fonts     | Geist · JetBrains Mono · Instrument Serif (local) |
+| Fonts     | IBM Plex Sans · IBM Plex Mono · IBM Plex Serif (local) |
 
 ---
 
@@ -39,7 +39,7 @@ This starts both processes concurrently:
 | Server  | http://localhost:3001       |
 | Health  | http://localhost:3001/api/health |
 
-The "Hello Choopi" smoke-test page confirms Instrument Serif italic, the brand gradient, and all design tokens are wired correctly.
+The "Hello Choopi" smoke-test page confirms IBM Plex Serif italic, the brand gradient, and all design tokens are wired correctly.
 
 ---
 
@@ -113,11 +113,13 @@ choopi-finance/
 Fonts are bundled locally via `@fontsource` npm packages — no CDN required.
 They are imported at the top of `client/src/styles/index.css` and processed by Vite.
 
-| Font                | Package                          | Role              |
-|---------------------|----------------------------------|-------------------|
-| Geist               | `@fontsource-variable/geist`     | UI, body, headings |
-| JetBrains Mono      | `@fontsource-variable/jetbrains-mono` | All numeric output |
-| Instrument Serif    | `@fontsource/instrument-serif`   | Display only (italic) |
+The app uses the **IBM Plex** superfamily for a cohesive, professional finance look. All numeric output uses tabular figures (`font-variant-numeric: tabular-nums`) so digits stay column-aligned.
+
+| Font            | Package                                   | Role                        |
+|-----------------|-------------------------------------------|-----------------------------|
+| IBM Plex Sans   | `@fontsource-variable/ibm-plex-sans`      | UI, body, headings (variable) |
+| IBM Plex Mono   | `@fontsource/ibm-plex-mono`               | All numeric output (tabular) |
+| IBM Plex Serif  | `@fontsource/ibm-plex-serif`              | Display / wordmark only (italic) |
 
 Because these ship as npm packages, `npm install` is all you need — no manual downloading or CDN calls happen at runtime. The app works fully offline.
 

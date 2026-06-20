@@ -55,6 +55,8 @@ interface InvRow {
   deleted_at: string | null;
   monthly_deposit: number | null;
   deposit_currency: string;
+  expected_annual_return: number | null;
+  monthly_contribution: number | null;
   created_at: string;
 }
 
@@ -74,6 +76,8 @@ export interface EnrichedInvestment {
   created_at: string;
   monthly_deposit: number | null;
   deposit_currency: string;
+  expected_annual_return: number | null;
+  monthly_contribution: number | null;
 
   // Position
   remaining_units: number;
@@ -251,7 +255,8 @@ export function computePortfolio(
   const investments = db
     .prepare<[number], InvRow>(
       `SELECT id, user_id, type, name, ticker, isin, broker, etf_kind, liquid_date,
-              closed_at, deleted_at, monthly_deposit, deposit_currency, created_at
+              closed_at, deleted_at, monthly_deposit, deposit_currency,
+              expected_annual_return, monthly_contribution, created_at
        FROM investments
        WHERE user_id = ? AND deleted_at IS NULL AND closed_at IS NULL`
     )
@@ -267,15 +272,14 @@ export function computePortfolio(
       ? (unrealized_pl_nis / total_net_deposited_nis) * 100
       : null;
 
-  // ── FIX 2: Realized YTD — per-row with currency conversion ──────────────────
-  // For SELL: use fx_rate_at_buy (the rate locked at buy time) for accurate NIS value.
-  //           Falls back to current fx.rate if fx_rate_at_buy is NULL.
-  // For DIV:  use current fx.rate (no historical rate stored on dividends).
+  // ── Realized & dividends YTD — per-row currency conversion ──────────────────
+  // Each row is converted to NIS via toNis() using its own currency and the
+  // current fx rate before summing (mixes NIS + USD rows safely).
   const yearStart = `${new Date().getFullYear()}-01-01T00:00:00Z`;
 
   const sellRows = db
-    .prepare<[number, string], { realized_pl: number | null; currency: string; fx_rate_at_buy: number | null }>(
-      `SELECT realized_pl, currency, fx_rate_at_buy
+    .prepare<[number, string], { realized_pl: number | null; currency: string }>(
+      `SELECT realized_pl, currency
        FROM transactions
        WHERE user_id = ? AND kind = 'SELL' AND occurred_at >= ?`
     )
@@ -284,8 +288,7 @@ export function computePortfolio(
   let realized_ytd_nis = 0;
   for (const r of sellRows) {
     if (r.realized_pl == null) continue;
-    const rate = r.fx_rate_at_buy ?? fx.rate;
-    realized_ytd_nis += toNis(r.realized_pl, r.currency, rate);
+    realized_ytd_nis += toNis(r.realized_pl, r.currency, fx.rate);
   }
 
   const divRows = db

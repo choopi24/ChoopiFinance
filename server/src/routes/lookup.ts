@@ -8,6 +8,69 @@ import { ok, fail } from "../middleware/respond.js";
 export const lookupRouter = Router();
 lookupRouter.use(requireAuth);
 
+interface SearchHit {
+  symbol: string;
+  name: string;
+  type: "stock" | "etf" | "crypto";
+  currency: string | null;
+  exchange: string | null;
+}
+
+// GET /api/lookup/search?q=<text>&type=<crypto|stock|etf>
+// Typeahead suggestions for the add form. Fails soft (returns []), since it's
+// a non-critical convenience — the user can always type the ticker manually.
+lookupRouter.get("/search", async (req, res) => {
+  const q = String(req.query.q ?? "").trim();
+  const type = String(req.query.type ?? "");
+  if (q.length < 2) return ok(res, [] as SearchHit[]);
+
+  try {
+    if (type === "crypto") {
+      const r = await fetch(
+        `https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(q)}`,
+        { signal: AbortSignal.timeout(5_000) }
+      );
+      if (!r.ok) return ok(res, [] as SearchHit[]);
+      const data = await r.json() as { coins?: { symbol: string; name: string }[] };
+      const hits: SearchHit[] = (data.coins ?? []).slice(0, 8).map(c => ({
+        symbol: c.symbol.toUpperCase(),
+        name: c.name,
+        type: "crypto",
+        currency: "USD",
+        exchange: null,
+      }));
+      return ok(res, hits);
+    }
+
+    // stock / etf via Yahoo. validateResult:false → return data instead of throwing
+    // on Yahoo's frequently-changing response shape.
+    const search = await yahooFinance.search(q, {}, { validateResult: false }) as { quotes?: Record<string, unknown>[] };
+    const wantEtf = type === "etf";
+    const hits: SearchHit[] = (search.quotes ?? [])
+      .filter(x => {
+        const qt = String(x.quoteType ?? "").toUpperCase();
+        if (!x.symbol) return false;
+        return wantEtf
+          ? (qt === "ETF" || qt === "MUTUALFUND" || qt === "FUND")
+          : (qt === "EQUITY" || qt === "ETF"); // stocks: allow ETFs too, they're close
+      })
+      .slice(0, 8)
+      .map(x => {
+        const qt = String(x.quoteType ?? "").toUpperCase();
+        return {
+          symbol: String(x.symbol),
+          name: String(x.longname ?? x.shortname ?? x.symbol),
+          type: (qt === "EQUITY" ? "stock" : "etf") as "stock" | "etf",
+          currency: (x.currency as string | undefined)?.toUpperCase() ?? null,
+          exchange: (x.exchange as string | undefined) ?? null,
+        };
+      });
+    return ok(res, hits);
+  } catch {
+    return ok(res, [] as SearchHit[]); // fail soft
+  }
+});
+
 // GET /api/lookup/isin/:isin
 // Searches Yahoo Finance by ISIN, returns name, ticker, currency, etf_kind.
 lookupRouter.get("/isin/:isin", async (req, res) => {
@@ -18,7 +81,7 @@ lookupRouter.get("/isin/:isin", async (req, res) => {
   }
 
   try {
-    const search = await yahooFinance.search(isin.toUpperCase()) as { quotes?: Record<string, unknown>[] };
+    const search = await yahooFinance.search(isin.toUpperCase(), {}, { validateResult: false }) as { quotes?: Record<string, unknown>[] };
     const hit = search.quotes?.[0];
 
     if (!hit || !hit.symbol) {
@@ -28,7 +91,7 @@ lookupRouter.get("/isin/:isin", async (req, res) => {
     const symbol = hit.symbol as string;
 
     // Get a richer quote for name + currency
-    const quote = await yahooFinance.quote(symbol) as Record<string, unknown>;
+    const quote = await yahooFinance.quote(symbol, {}, { validateResult: false }) as Record<string, unknown>;
 
     const name: string = (
       (quote.longName as string | undefined) ??
