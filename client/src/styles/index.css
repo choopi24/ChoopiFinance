@@ -1,8 +1,13 @@
-/* 1. Fonts — bundled locally via @fontsource packages */
-@import "@fontsource-variable/geist";
-@import "@fontsource-variable/jetbrains-mono";
-@import "@fontsource/instrument-serif/400.css";
-@import "@fontsource/instrument-serif/400-italic.css";
+/* 1. Fonts — bundled locally via @fontsource packages
+   Manrope        → UI / body (clean, premium geometric sans)
+   Fraunces       → display headings (characterful variable serif, opsz axis)
+   IBM Plex Mono  → numbers / tabular data (professional figures) */
+@import "@fontsource-variable/manrope";
+@import "@fontsource-variable/fraunces/standard.css";
+@import "@fontsource-variable/fraunces/standard-italic.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+@import "@fontsource/ibm-plex-mono/600.css";
 
 /* 2. Design tokens (CSS custom properties, light/dark themes) */
 @import "./tokens.css";
@@ -74,7 +79,12 @@ body {
   font-family: var(--font-mono);
   font-feature-settings: "tnum" 1, "zero" 1;
 }
-.serif { font-family: var(--font-serif); }
+.serif {
+  font-family: var(--font-serif);
+  /* Display optical size, refined (non-wonky) for an elegant, premium feel */
+  font-variation-settings: "opsz" 144, "SOFT" 0, "WONK" 0;
+  letter-spacing: -0.015em;
+}
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
