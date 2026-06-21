@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "../lib/api";
+import { api, type ApiOk } from "../lib/api";
 
 export interface FxRateData {
   from: string;
@@ -10,7 +10,6 @@ export interface FxRateData {
   override: number | null;
 }
 
-interface ApiOk<T> { success: true; data: T }
 interface SettingsData { display_currency: string; fx_override: number | null }
 
 export function useFxRate() {

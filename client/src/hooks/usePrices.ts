@@ -1,13 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "../lib/api";
+import { api, type ApiOk } from "../lib/api";
 
 interface RefreshResult {
   last_sync: string;
   count: number;
 }
-
-interface ApiOk<T> { success: true; data: T }
 
 export interface Quote {
   symbol: string;

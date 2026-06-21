@@ -16,7 +16,7 @@
 
 import type Database from "better-sqlite3";
 import { computePosition, computeManualPosition } from "./fifo.js";
-import { getRateSync } from "./fx.js";
+import { getRateSync, toNis } from "./fx.js";
 
 const MARKET_TYPES = new Set(["crypto", "stock", "etf"]);
 const STALE_30 = 30;
@@ -32,11 +32,6 @@ export interface FxInfo {
 /** Synchronous FX lookup — reads cache only. Delegates to fx service. */
 export function getUsdNisRate(db: Database.Database, userId?: number): FxInfo {
   return getRateSync(db, userId);
-}
-
-function toNis(amount: number, currency: string, usdNis: number): number {
-  if (currency === "NIS") return amount;
-  return amount * usdNis;
 }
 
 // ── Investment row type (from DB) ─────────────────────────────────────────────

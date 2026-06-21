@@ -1,7 +1,7 @@
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../hooks/useTheme";
 import { useCurrency } from "../hooks/useCurrency";
-import { usePortfolio, toDisplayCurrency } from "../hooks/usePortfolio";
+import { usePortfolio, toDisplayCurrency, FALLBACK_FX_USD_NIS } from "../hooks/usePortfolio";
 import { usePrices } from "../hooks/usePrices";
 import { useFxRate } from "../hooks/useFxRate";
 import { useRecentTransactions } from "../hooks/useTransactions";
@@ -36,7 +36,7 @@ export default function Dashboard() {
   const { data: portfolio, isLoading: portfolioLoading } = usePortfolio();
   const { data: recentTxs = [] } = useRecentTransactions(5);
 
-  const fxRate = fx?.rate ?? portfolio?.fx_rate_used ?? 3.7;
+  const fxRate = fx?.rate ?? portfolio?.fx_rate_used ?? FALLBACK_FX_USD_NIS;
 
   // ── Derive display values ─────────────────────────────────────────────────
   const totalValueNis  = portfolio?.total_value_nis ?? 0;

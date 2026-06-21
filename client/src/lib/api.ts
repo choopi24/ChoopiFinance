@@ -1,5 +1,8 @@
 const BASE = "/api";
 
+/** Standard success envelope returned by the API (respond.ts `ok`). */
+export interface ApiOk<T> { success: true; data: T }
+
 // ── Connection status pub/sub ───────────────────────────────────────────────
 // Lets a global banner react when the API becomes unreachable (server down, or
 // the dev proxy returning a non-JSON error page) instead of surfacing a cryptic

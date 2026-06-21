@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { api } from "../lib/api";
+import { api, type ApiOk } from "../lib/api";
 
 export interface RealizedSummary {
   total: number;
@@ -41,8 +41,6 @@ export interface RealizedYear {
   dividends: number;
   count: number;
 }
-
-interface ApiOk<T> { success: true; data: T }
 
 export function useRealizedYear(year: number) {
   return useQuery<{

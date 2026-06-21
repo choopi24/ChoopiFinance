@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "../lib/api";
+import { api, type ApiOk } from "../lib/api";
 import type { TransactionKind } from "@choopi/shared";
 
 export interface Transaction {
@@ -18,7 +18,6 @@ export interface Transaction {
   realized_pl: number | null;
 }
 
-interface ApiOk<T> { success: true; data: T }
 interface PagedResult<T> { data: T[]; total: number; page: number; per_page: number }
 
 export interface TransactionFilters {

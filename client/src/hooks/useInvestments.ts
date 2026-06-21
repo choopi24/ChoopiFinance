@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "../lib/api";
+import { api, type ApiOk } from "../lib/api";
 import type { AssetType } from "@choopi/shared";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -54,8 +54,6 @@ export interface ExistingCheck {
   current_value_nis: number;
   unrealized_pl_nis: number;
 }
-
-interface ApiOk<T> { success: true; data: T }
 
 // ── Queries ───────────────────────────────────────────────────────────────────
 

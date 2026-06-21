@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "../lib/api";
+import { api, type ApiOk } from "../lib/api";
 
 export interface UserSettings {
   display_currency: string;
@@ -9,8 +9,6 @@ export interface UserSettings {
   stay_signed_in: number;
   show_on_lock_screen: number;
 }
-
-interface ApiOk<T> { success: true; data: T }
 
 export function useUserSettings() {
   return useQuery<UserSettings>({

@@ -8,7 +8,7 @@ import { useCurrency } from "../hooks/useCurrency";
 import { usePrices } from "../hooks/usePrices";
 import { useFxRate } from "../hooks/useFxRate";
 import { useInvestments } from "../hooks/useInvestments";
-import { toDisplayCurrency } from "../hooks/usePortfolio";
+import { toDisplayCurrency, FALLBACK_FX_USD_NIS } from "../hooks/usePortfolio";
 import { AppShell } from "../components/AppShell";
 import { AssetIcon } from "../components/AssetIcon";
 import { Button } from "../components/Button";
@@ -280,7 +280,7 @@ export default function Investments() {
 
   const { data: investments = [], isLoading } = useInvestments(showClosed);
   // Use live rate from useFxRate → server-embedded rate from enriched investments → documented fallback
-  const fxRate = fx?.rate ?? investments[0]?.fx_rate_used ?? 3.7;
+  const fxRate = fx?.rate ?? investments[0]?.fx_rate_used ?? FALLBACK_FX_USD_NIS;
 
   const projectionInv = projectionId != null
     ? investments.find(i => i.id === projectionId) ?? null

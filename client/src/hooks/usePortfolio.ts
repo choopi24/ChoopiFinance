@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { api } from "../lib/api";
+import { api, type ApiOk } from "../lib/api";
 import type { Currency } from "@choopi/shared";
 
 export interface AllocationSlice {
@@ -30,8 +30,6 @@ export interface SnapshotPoint {
   total_net_deposited_usd: number;
 }
 
-interface ApiOk<T> { success: true; data: T }
-
 export function usePortfolio() {
   return useQuery<PortfolioSummary>({
     queryKey: ["portfolio"],
@@ -52,6 +50,12 @@ export function usePortfolioHistory(range: "1M" | "3M" | "1Y" | "ALL" = "1Y") {
     staleTime: 60 * 1_000,
   });
 }
+
+/**
+ * Last-resort USD→NIS rate when neither the live fx query nor the server-embedded
+ * rate is available. Mirrors the server's FALLBACK_USD_NIS.
+ */
+export const FALLBACK_FX_USD_NIS = 3.7;
 
 /** Convert a NIS portfolio value to the display currency. */
 export function toDisplayCurrency(

@@ -10,8 +10,13 @@
 import type Database from "better-sqlite3";
 
 const FX_TTL_MS = 15 * 60 * 1_000;
-const FALLBACK_USD_NIS = 3.7;
+export const FALLBACK_USD_NIS = 3.7;
 const FRANKFURTER_URL = "https://api.frankfurter.app/latest?from=USD&to=ILS";
+
+/** Convert a native amount to NIS using a USD→NIS rate. NIS passes through. */
+export function toNis(amount: number, currency: string, usdNis: number): number {
+  return currency === "NIS" ? amount : amount * usdNis;
+}
 
 export interface FxResult {
   rate: number;

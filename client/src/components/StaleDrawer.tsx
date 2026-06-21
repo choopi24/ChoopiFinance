@@ -1,6 +1,6 @@
 import { X, RefreshCw } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
-import { api } from "../lib/api";
+import { api, type ApiOk } from "../lib/api";
 
 interface InvRow {
   id: number;
@@ -10,8 +10,6 @@ interface InvRow {
   stale_days: number | null;
   last_update_at: string | null;
 }
-
-interface ApiOk<T> { success: true; data: T }
 
 function useStaleInvestments() {
   return useQuery<InvRow[]>({

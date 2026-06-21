@@ -2,15 +2,10 @@ import { Router } from "express";
 import { getDb } from "../db/init.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { ok, fail } from "../middleware/respond.js";
-import { getRateSync } from "../services/fx.js";
+import { getRateSync, toNis } from "../services/fx.js";
 
 export const realizedRouter = Router();
 realizedRouter.use(requireAuth);
-
-/** Convert a native amount to NIS using the current USD→NIS rate. */
-function toNis(amount: number, currency: string, usdNis: number): number {
-  return currency === "NIS" ? amount : amount * usdNis;
-}
 
 // GET /api/realized?year=YYYY — annual summary + per-asset breakdown
 realizedRouter.get("/", (req, res) => {
