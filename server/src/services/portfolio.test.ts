@@ -136,3 +136,26 @@ describe("computePortfolio — mixed-currency YTD conversion", () => {
     expect(p.realized_ytd_nis).not.toBe(200);
   });
 });
+
+describe("computePortfolio — cost-only holding (unpriceable ticker)", () => {
+  let db: Database.Database;
+  beforeEach(() => { db = makeDb(); setRate(db, 4); });
+
+  it("shows the invested amount (not 0) for an ETF with no live price", () => {
+    // ETF with a ticker that has no price_cache entry (e.g. TA-35), bought by amount only.
+    const r = db.prepare(
+      "INSERT INTO investments (user_id, type, name, ticker) VALUES (1, 'etf', 'TA-35', 'TA 35')"
+    ).run();
+    const invId = r.lastInsertRowid as number;
+    db.prepare(
+      `INSERT INTO transactions (investment_id, user_id, kind, total_amount, currency, occurred_at)
+       VALUES (?, 1, 'BUY', 5000, 'NIS', '${MID_YEAR}')`
+    ).run(invId);
+
+    const p = computePortfolio(db, 1);
+    expect(p.total_value_nis).toBe(5000);          // valued at cost, not 0
+    expect(p.total_net_deposited_nis).toBe(5000);
+    expect(p.unrealized_pl_nis).toBe(0);
+    expect(p.investment_count).toBe(1);            // present, not closed/hidden
+  });
+});

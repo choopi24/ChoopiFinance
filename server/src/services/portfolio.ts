@@ -156,9 +156,12 @@ export function enrichInvestment(
     const current_value_native = current_price != null
       ? pos.remaining_units * current_price
       : null;
+    // Live-priced units (if any) PLUS any cost-only amount valued at cost.
+    // With no price at all, fall back to the full cost basis (incl. cost-only),
+    // so an amount-only holding for an unpriceable ticker still shows its value.
     const current_value_nis = current_value_native != null
-      ? toNis(current_value_native, priceCurrency, fx.rate)
-      : toNis(pos.cost_basis_remaining, pos.currency, fx.rate); // fallback: show cost
+      ? toNis(current_value_native, priceCurrency, fx.rate) + toNis(pos.cost_only_value, pos.currency, fx.rate)
+      : toNis(pos.cost_basis_remaining, pos.currency, fx.rate);
 
     const cost_basis_nis = toNis(pos.cost_basis_remaining, pos.currency, fx.rate);
     const realized_pl_nis = toNis(pos.realized_pl_total, pos.currency, fx.rate);

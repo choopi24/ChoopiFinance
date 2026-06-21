@@ -87,6 +87,20 @@ function buy(
   ).run(invId, units, price, units * price, currency, date);
 }
 
+/** A BUY recorded by amount only (no units/price) — e.g. an unpriceable ticker. */
+function buyAmount(
+  db: Database.Database,
+  invId: number,
+  amount: number,
+  date: string,
+  currency = "NIS"
+): void {
+  db.prepare(
+    `INSERT INTO transactions (investment_id, user_id, kind, total_amount, currency, occurred_at)
+     VALUES (?, 1, 'BUY', ?, ?, ?)`
+  ).run(invId, amount, currency, date);
+}
+
 function sell(
   db: Database.Database,
   invId: number,
@@ -389,5 +403,33 @@ describe("computeManualPosition — education / other (DEPOSIT model)", () => {
     expect(pos.net_deposited).toBe(5_000);
     expect(pos.unrealized_pl).toBe(800);
     expect(pos.update_count).toBe(2);
+  });
+});
+
+describe("computePosition — cost-only BUY (unpriceable ticker)", () => {
+  let db: Database.Database;
+  beforeEach(() => { db = makeDb(); });
+
+  it("records the amount as cost basis with no units", () => {
+    const invId = insertInvestment(db, "etf");
+    buyAmount(db, invId, 5_000, "2024-01-01", "NIS"); // e.g. TA-35, no live price
+
+    const pos = computePosition(db, invId);
+    expect(pos.remaining_units).toBe(0);
+    expect(pos.cost_only_value).toBe(5_000);
+    expect(pos.cost_basis_remaining).toBe(5_000);
+    expect(pos.currency).toBe("NIS");
+    expect(pos.is_closed).toBe(false); // NOT closed — it's a held, valued position
+  });
+
+  it("adds cost-only amounts on top of normal priced lots", () => {
+    const invId = insertInvestment(db, "etf");
+    buy(db, invId, 10, 100, "2024-01-01", "NIS"); // 1,000 priced
+    buyAmount(db, invId, 5_000, "2024-02-01", "NIS"); // 5,000 cost-only
+
+    const pos = computePosition(db, invId);
+    expect(pos.remaining_units).toBe(10);
+    expect(pos.cost_only_value).toBe(5_000);
+    expect(pos.cost_basis_remaining).toBe(6_000); // 1,000 + 5,000
   });
 });

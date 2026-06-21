@@ -25,11 +25,12 @@ export interface FifoLot {
 
 export interface PositionResult {
   remaining_units: number;
-  cost_basis_remaining: number; // sum(units_remaining * price_per_unit) native
+  cost_basis_remaining: number; // sum(units_remaining * price_per_unit) + cost_only_value, native
+  cost_only_value: number;      // BUY amounts with no units (valued at cost, no live price)
   realized_pl_total: number;    // sum of all SELL realized P/Ls
   currency: string;
   lots: FifoLot[];              // surviving BUY lots
-  is_closed: boolean;           // remaining_units < epsilon
+  is_closed: boolean;           // no remaining units AND no cost-only amount
 }
 
 export interface RealizationDetail {
@@ -76,10 +77,12 @@ function runFifo(txs: TxRow[]): {
   lots: FifoLot[];
   realized: { sell_tx_id: number; realized_pl: number; currency: string }[];
   currency: string;
+  cost_only: number; // BUY amounts recorded without units (unpriceable tickers); valued at cost
 } {
   const lots: FifoLot[] = [];
   const realized: { sell_tx_id: number; realized_pl: number; currency: string }[] = [];
   let currency = "NIS";
+  let cost_only = 0;
 
   for (const tx of txs) {
     if (tx.kind === "BUY" && tx.units != null && tx.price_per_unit != null && tx.units > 0) {
@@ -91,6 +94,12 @@ function runFifo(txs: TxRow[]): {
         currency: tx.currency,
         occurred_at: tx.occurred_at,
       });
+    } else if (tx.kind === "BUY") {
+      // Cost-only BUY: an amount recorded without a usable unit/price (e.g. an
+      // Israeli/TASE fund with no live price). Tracked as cost basis and valued
+      // at cost — it just won't auto-update from a market price.
+      currency = tx.currency;
+      cost_only += tx.total_amount;
     } else if (tx.kind === "SELL" && tx.units != null && tx.units > 0) {
       currency = tx.currency;
       const sellPrice =
@@ -112,7 +121,7 @@ function runFifo(txs: TxRow[]): {
     // DIV, UPDATE, DEPOSIT: ignored by FIFO
   }
 
-  return { lots, realized, currency };
+  return { lots, realized, currency, cost_only };
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -131,22 +140,21 @@ export function computePosition(db: Database.Database, investmentId: number): Po
     )
     .all(investmentId);
 
-  const { lots, realized, currency } = runFifo(txs);
+  const { lots, realized, currency, cost_only } = runFifo(txs);
 
   const remaining_units = lots.reduce((s, l) => s + l.units_remaining, 0);
-  const cost_basis_remaining = lots.reduce(
-    (s, l) => s + l.units_remaining * l.price_per_unit,
-    0
-  );
+  const lots_cost = lots.reduce((s, l) => s + l.units_remaining * l.price_per_unit, 0);
+  const cost_basis_remaining = lots_cost + cost_only;
   const realized_pl_total = realized.reduce((s, r) => s + r.realized_pl, 0);
 
   return {
     remaining_units,
     cost_basis_remaining,
+    cost_only_value: cost_only,
     realized_pl_total,
     currency,
     lots,
-    is_closed: remaining_units < EPSILON,
+    is_closed: remaining_units < EPSILON && cost_only < EPSILON,
   };
 }
 
@@ -168,7 +176,7 @@ export function recomputeRealized(
     )
     .all(investmentId);
 
-  const { lots, realized } = runFifo(txs);
+  const { lots, realized, cost_only } = runFifo(txs);
 
   const updateStmt = db.prepare(
     "UPDATE transactions SET realized_pl = ? WHERE id = ?"
@@ -182,7 +190,8 @@ export function recomputeRealized(
   recomputeTx();
 
   const remaining = lots.reduce((s, l) => s + l.units_remaining, 0);
-  const isClosed = remaining < EPSILON;
+  // A cost-only holding (amount recorded without units) is still open.
+  const isClosed = remaining < EPSILON && cost_only < EPSILON;
 
   db.prepare(
     `UPDATE investments SET closed_at = ? WHERE id = ?`
