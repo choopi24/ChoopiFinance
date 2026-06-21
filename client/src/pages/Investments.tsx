@@ -83,7 +83,14 @@ function InvSubLine({ inv }: { inv: Investment }) {
   if (inv.broker) parts.push(inv.broker);
   if (inv.type === "crypto" && inv.ticker) parts.push("wallet");
   if (inv.etf_kind) parts.push(inv.etf_kind === "accumulating" ? "Acc" : "Dist");
-  return <div className="cf-inv-sub">{parts.join(" · ") || inv.ticker || ""}</div>;
+  // No cached live price → valued at cost (e.g. an unpriceable TASE fund).
+  const noLivePrice = !inv.closed_at && inv.current_price == null;
+  return (
+    <div className="cf-inv-sub">
+      {parts.join(" · ") || inv.ticker || ""}
+      {noLivePrice && <span className="cf-badge-nolive" title="No market price found — valued at cost">no live price</span>}
+    </div>
+  );
 }
 
 // ── Desktop row ───────────────────────────────────────────────────────────────

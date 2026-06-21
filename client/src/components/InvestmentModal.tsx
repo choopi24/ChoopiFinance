@@ -9,6 +9,7 @@ import {
   useCreateInvestment, useAddTransaction, useEditInvestment,
   useCheckExisting, useBulkTransactions,
 } from "../hooks/useInvestments";
+import { useQuote } from "../hooks/usePrices";
 import { api } from "../lib/api";
 import { fmt } from "../lib/fmt";
 import type { AssetType, Currency } from "@choopi/shared";
@@ -207,6 +208,51 @@ function MergeBanner({ info, onSeparate }: { info: MergeInfo; onSeparate: () => 
   );
 }
 
+// ── Live quote preview (transparency for value-based entry) ───────────────────
+// Shows the price used and the units your amount converts to, BEFORE you save —
+// or a clear notice that there's no live price so it'll be recorded at cost.
+
+function fmtPrice(n: number): string {
+  return n.toLocaleString("en-US", { maximumFractionDigits: n < 1 ? 6 : 2 });
+}
+
+function QuotePreview({
+  ticker, type, amount, currency,
+}: { ticker: string; type: AssetType; amount: string; currency: Currency }) {
+  const enabled = ticker.trim().length >= 1;
+  const { data: quote, isFetching, isError } = useQuote(
+    ticker, type as "stock" | "etf" | "crypto", undefined, enabled
+  );
+  if (!enabled) return null;
+
+  if (isFetching && !quote) {
+    return <div className="cf-quote-preview">Fetching live price…</div>;
+  }
+
+  const amt = Number(amount) || 0;
+
+  if (isError || !quote) {
+    return (
+      <div className="cf-quote-preview is-warn">
+        No live price for <strong>{ticker}</strong>
+        {amt > 0 ? <> — it’ll be saved at cost ({fmt(amt, { currency })}), value won’t auto-update.</> : "."}
+      </div>
+    );
+  }
+
+  const sameCcy = quote.currency === currency;
+  const units = amt > 0 && quote.price > 0 && sameCcy ? amt / quote.price : null;
+  return (
+    <div className="cf-quote-preview">
+      Live price: <span className="mono">{fmtPrice(quote.price)} {quote.currency}</span>
+      {units != null && (
+        <> → ≈ <span className="mono">{units.toLocaleString("en-US", { maximumFractionDigits: 6 })}</span> units</>
+      )}
+      {amt > 0 && !sameCcy && <> · your {currency} amount is converted on save</>}
+    </div>
+  );
+}
+
 // ── Holding form for market types (crypto / stock / etf) ──────────────────────
 // Creates the investment + a synthetic BUY in one server call.
 
@@ -390,6 +436,11 @@ function HoldingMarketForm({ type, onClose, setError }: HoldingMarketFormProps) 
           <Segment options={CCY_OPTIONS} value={currency} onChange={setCurrency} />
         </Field>
       </div>
+
+      {/* Transparency: show the price + computed units (or cost fallback) before saving */}
+      {units === "" && upperTicker.length >= 1 && (
+        <QuotePreview ticker={upperTicker} type={type} amount={amount} currency={currency} />
+      )}
 
       {/* Optional precise entry */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>

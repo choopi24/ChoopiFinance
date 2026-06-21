@@ -6,10 +6,24 @@ interface FmtOptions {
   sign?: boolean;
 }
 
+/**
+ * Pick a sensible decimal count by magnitude when none is given:
+ * large fiat totals stay whole, while small/crypto values keep precision
+ * (e.g. ₪487,320 → no decimals; $0.42 → $0.4200; $12.50 → $12.50).
+ */
+function autoDecimals(abs: number): number {
+  if (abs === 0) return 0;
+  if (abs < 1) return 4;
+  if (abs < 100) return 2;
+  return 0;
+}
+
 export function fmt(n: number, opts: FmtOptions = {}): string {
-  const { currency = "NIS", decimals = 0, sign = false } = opts;
+  const { currency = "NIS", sign = false } = opts;
+  const abs = Math.abs(n);
+  const decimals = opts.decimals ?? autoDecimals(abs);
   const sym = currency === "USD" ? "$" : "₪";
-  const v = Math.abs(n).toLocaleString("en-US", {
+  const v = abs.toLocaleString("en-US", {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
   });

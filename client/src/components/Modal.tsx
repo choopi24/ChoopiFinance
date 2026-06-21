@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { createPortal } from "react-dom";
 
@@ -12,6 +12,8 @@ interface ModalProps {
 }
 
 export function Modal({ open, onClose, title, children, footer, width = 520 }: ModalProps) {
+  const panelRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
@@ -19,14 +21,27 @@ export function Modal({ open, onClose, title, children, footer, width = 520 }: M
     return () => window.removeEventListener("keydown", handler);
   }, [open, onClose]);
 
+  // Move focus into the dialog on open and restore it to the trigger on close.
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.activeElement as HTMLElement | null;
+    panelRef.current?.focus();
+    return () => prev?.focus?.();
+  }, [open]);
+
   if (!open) return null;
 
   return createPortal(
     <div className="cf-modal-backdrop" onClick={onClose}>
       <div
+        ref={panelRef}
         className="cf-modal"
         style={{ maxWidth: width }}
         onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        tabIndex={-1}
       >
         {title && (
           <div className="cf-modal-head">

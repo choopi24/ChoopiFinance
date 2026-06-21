@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { SkeletonCard } from "./components/SkeletonShimmer";
+import { ConnectionBanner } from "./components/ConnectionBanner";
 import LoginPage from "./pages/auth/LoginPage";
 
 const Dashboard          = lazy(() => import("./pages/Dashboard"));
@@ -128,6 +129,7 @@ function AppRoutes() {
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
+      <ConnectionBanner />
       <BrowserRouter>
         <AuthProvider>
           <AppRoutes />
