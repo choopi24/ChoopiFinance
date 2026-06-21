@@ -2,9 +2,15 @@ import { Router } from "express";
 import { getDb } from "../db/init.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { ok, fail } from "../middleware/respond.js";
+import { getRateSync } from "../services/fx.js";
 
 export const realizedRouter = Router();
 realizedRouter.use(requireAuth);
+
+/** Convert a native amount to NIS using the current USD→NIS rate. */
+function toNis(amount: number, currency: string, usdNis: number): number {
+  return currency === "NIS" ? amount : amount * usdNis;
+}
 
 // GET /api/realized?year=YYYY — annual summary + per-asset breakdown
 realizedRouter.get("/", (req, res) => {
@@ -27,20 +33,22 @@ realizedRouter.get("/", (req, res) => {
       )
       .all(req.user!.id, from, to) as any[];
 
-    // Aggregate
+    // Aggregate — convert each row to NIS so mixed NIS/USD transactions sum correctly.
+    const rate = getRateSync(db, req.user!.id).rate;
     let total_realized = 0;
     let total_dividends = 0;
     let total_capital = 0;
     const byAsset = new Map<number, { name: string; ticker: string | null; type: string; realized: number; dividends: number; count: number }>();
 
     for (const r of rows) {
-      const pl = r.realized_pl ?? 0;
+      const plNis  = toNis(r.realized_pl ?? 0, r.currency, rate);
+      const divNis = toNis(r.total_amount, r.currency, rate);
       if (r.kind === "SELL") {
-        total_capital += pl;
-        total_realized += pl;
+        total_capital += plNis;
+        total_realized += plNis;
       } else if (r.kind === "DIV") {
-        total_dividends += r.total_amount;
-        total_realized += r.total_amount;
+        total_dividends += divNis;
+        total_realized += divNis;
       }
 
       if (!byAsset.has(r.investment_id)) {
@@ -54,8 +62,8 @@ realizedRouter.get("/", (req, res) => {
         });
       }
       const entry = byAsset.get(r.investment_id)!;
-      if (r.kind === "SELL") { entry.realized += pl; entry.count++; }
-      if (r.kind === "DIV")  { entry.dividends += r.total_amount; entry.count++; }
+      if (r.kind === "SELL") { entry.realized += plNis; entry.count++; }
+      if (r.kind === "DIV")  { entry.dividends += divNis; entry.count++; }
     }
 
     ok(res, {
@@ -78,27 +86,35 @@ realizedRouter.get("/", (req, res) => {
 realizedRouter.get("/years", (req, res) => {
   try {
     const db = getDb();
+    // Aggregate in JS so each row is converted to NIS (mixed NIS/USD safe).
+    const rate = getRateSync(db, req.user!.id).rate;
     const rows = db
       .prepare(
-        `SELECT
-           CAST(strftime('%Y', occurred_at) AS INTEGER) AS year,
-           SUM(CASE WHEN kind='SELL' THEN realized_pl ELSE 0 END) AS capital_gains,
-           SUM(CASE WHEN kind='DIV'  THEN total_amount ELSE 0 END) AS dividends,
-           COUNT(*) AS trade_count
+        `SELECT CAST(strftime('%Y', occurred_at) AS INTEGER) AS year,
+                kind, total_amount, currency, realized_pl
          FROM transactions
-         WHERE user_id = ? AND kind IN ('SELL','DIV')
-         GROUP BY year
-         ORDER BY year DESC`
+         WHERE user_id = ? AND kind IN ('SELL','DIV')`
       )
-      .all(req.user!.id) as { year: number; capital_gains: number; dividends: number; trade_count: number }[];
+      .all(req.user!.id) as { year: number; kind: string; total_amount: number; currency: string; realized_pl: number | null }[];
 
-    const years = rows.map(r => ({
-      year: r.year,
-      total: (r.capital_gains ?? 0) + (r.dividends ?? 0),
-      capital_gains: r.capital_gains ?? 0,
-      dividends: r.dividends ?? 0,
-      count: r.trade_count,
-    }));
+    const byYear = new Map<number, { capital_gains: number; dividends: number; count: number }>();
+    for (const r of rows) {
+      if (!byYear.has(r.year)) byYear.set(r.year, { capital_gains: 0, dividends: 0, count: 0 });
+      const e = byYear.get(r.year)!;
+      if (r.kind === "SELL") e.capital_gains += toNis(r.realized_pl ?? 0, r.currency, rate);
+      else                   e.dividends     += toNis(r.total_amount, r.currency, rate);
+      e.count++;
+    }
+
+    const years = [...byYear.entries()]
+      .map(([year, v]) => ({
+        year,
+        total: v.capital_gains + v.dividends,
+        capital_gains: v.capital_gains,
+        dividends: v.dividends,
+        count: v.count,
+      }))
+      .sort((a, b) => b.year - a.year);
 
     ok(res, { years });
   } catch (e) {

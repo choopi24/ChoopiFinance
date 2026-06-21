@@ -56,6 +56,9 @@ export function KpiHero({
   const sym = currency === "NIS" ? "₪" : "$";
   const altSym = currency === "NIS" ? "$" : "₪";
   const altCcy: Currency = currency === "NIS" ? "USD" : "NIS";
+  // Conversion ratio between display and alt currency, derived from the two totals
+  // the caller already converted (avoids needing the fx rate here).
+  const altRatio = totalValue !== 0 ? totalValueAlt / totalValue : 0;
 
   return (
     <div className="cf-kpi-hero">
@@ -94,7 +97,7 @@ export function KpiHero({
           <div className="cf-kpi-label">Net Deposited</div>
           <div className="cf-kpi-value mono">{fmt(netInvested, { currency })}</div>
           <div className="cf-kpi-sub mono">
-            ≈ {fmt(netInvested / (currency === "NIS" ? 1 : 1), { currency: altCcy })}
+            ≈ {fmt(netInvested * altRatio, { currency: altCcy })}
           </div>
         </div>
         <div className="cf-kpi-stat">
