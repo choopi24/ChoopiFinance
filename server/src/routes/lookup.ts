@@ -4,9 +4,34 @@ import YahooFinanceClass from "yahoo-finance2";
 const yahooFinance = new (YahooFinanceClass as any)();
 import { requireAuth } from "../middleware/requireAuth.js";
 import { ok, fail } from "../middleware/respond.js";
+import { getQuote, QuoteUnavailableError, type AssetMarketType } from "../services/quote.js";
 
 export const lookupRouter = Router();
 lookupRouter.use(requireAuth);
+
+const MARKET_TYPES = new Set(["crypto", "stock", "etf"]);
+
+// GET /api/lookup/quote?ticker=VOO&type=etf[&date=YYYY-MM-DD]
+// Single live (or historical) quote used to derive units for value-based entry.
+// Returns { symbol, price, currency, name, as_of }. 404 if the ticker can't be priced.
+lookupRouter.get("/quote", async (req, res) => {
+  const ticker = String(req.query.ticker ?? "").trim();
+  const type = String(req.query.type ?? "");
+  const date = req.query.date ? String(req.query.date) : undefined;
+
+  if (!ticker) return fail(res, "ticker is required");
+  if (!MARKET_TYPES.has(type)) return fail(res, "type must be one of: crypto, stock, etf");
+  if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return fail(res, "date must be YYYY-MM-DD");
+  if (date && new Date(`${date}T00:00:00Z`) > new Date()) return fail(res, "date cannot be in the future");
+
+  try {
+    const quote = await getQuote(ticker, type as AssetMarketType, date);
+    ok(res, quote);
+  } catch (e) {
+    if (e instanceof QuoteUnavailableError) return fail(res, e.message, 404);
+    fail(res, `Quote lookup failed: ${(e as Error).message}`, 500);
+  }
+});
 
 interface SearchHit {
   symbol: string;

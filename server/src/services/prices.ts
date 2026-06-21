@@ -47,13 +47,21 @@ const COINGECKO_IDS: Record<string, string> = {
 // Runtime cache for unknown symbols resolved via CoinGecko search
 const resolvedIds = new Map<string, string>();
 
-async function getCoinGeckoId(ticker: string): Promise<string | null> {
+/**
+ * Resolve a crypto ticker (e.g. "BTC") to its CoinGecko id (e.g. "bitcoin").
+ * Checks the static map, then a runtime cache, then CoinGecko search.
+ * `fetchImpl` is injectable for testing. Returns null if unresolved.
+ */
+export async function resolveCoinGeckoId(
+  ticker: string,
+  fetchImpl: typeof fetch = fetch
+): Promise<string | null> {
   const upper = ticker.toUpperCase();
   if (COINGECKO_IDS[upper]) return COINGECKO_IDS[upper];
   if (resolvedIds.has(upper)) return resolvedIds.get(upper)!;
 
   try {
-    const resp = await fetch(
+    const resp = await fetchImpl(
       `https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(ticker)}`,
       { signal: AbortSignal.timeout(5_000) }
     );
@@ -68,6 +76,9 @@ async function getCoinGeckoId(ticker: string): Promise<string | null> {
 
   return null;
 }
+
+// Backwards-compatible internal alias.
+const getCoinGeckoId = resolveCoinGeckoId;
 
 // ── Crypto: batched CoinGecko call ───────────────────────────────────────────
 
