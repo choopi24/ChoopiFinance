@@ -28,6 +28,10 @@ A locally-hosted, LAN-accessible personal finance tracker.
 ```bash
 cd choopi-finance
 npm install
+
+# one-time: create the server env file with a real JWT secret
+cp server/.env.example server/.env
+sed -i '' "s/replace-with-a-long-random-secret/$(openssl rand -hex 32)/" server/.env
 npm run dev
 ```
 

@@ -2,25 +2,25 @@ import type { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { getDb } from "../db/init.js";
 
-const DEV_JWT_SECRET = "choopi-dev-secret-change-in-prod";
+// The old baked-in fallback — kept only to reject configs still using it.
+const LEGACY_DEV_SECRET = "choopi-dev-secret-change-in-prod";
 
 /**
- * Resolve the JWT secret. In production a real secret is mandatory:
- * the process refuses to start if JWT_SECRET is unset or still the dev default.
- * Outside production the dev fallback is allowed for convenience.
+ * Resolve the JWT secret. A real secret is mandatory in EVERY mode — the
+ * process fails fast at startup if JWT_SECRET is unset, blank, or still the
+ * old baked-in dev default. server/.env is loaded by src/env.ts (imported
+ * first in index.ts); see .env.example.
  */
 function resolveJwtSecret(): string {
   const secret = process.env.JWT_SECRET;
-  if (process.env.NODE_ENV === "production") {
-    if (!secret || secret === DEV_JWT_SECRET) {
-      throw new Error(
-        "JWT_SECRET must be set to a non-default value in production. " +
-          "Refusing to start with an unset or development secret."
-      );
-    }
-    return secret;
+  if (!secret || !secret.trim() || secret === LEGACY_DEV_SECRET) {
+    throw new Error(
+      "JWT_SECRET is not configured. Create server/.env with a real secret " +
+        '(e.g. JWT_SECRET=$(openssl rand -hex 32)) — see server/.env.example. ' +
+        "Refusing to start with a missing or default secret."
+    );
   }
-  return secret ?? DEV_JWT_SECRET;
+  return secret;
 }
 
 const JWT_SECRET = resolveJwtSecret();

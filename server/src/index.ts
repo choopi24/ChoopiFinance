@@ -1,3 +1,4 @@
+import "./env.js"; // must be first — populates process.env before route modules evaluate
 import express from "express";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
