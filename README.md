@@ -201,3 +201,33 @@ pm2 save && pm2 startup   # auto-start on boot
 ```
 
 Change the port: `PORT=8080 npm run start` or set `PORT=8080` in `server/.env`.
+
+## Backups & restore
+
+**Automatic backups.** The server writes a WAL-safe hot copy of the SQLite DB
+(via better-sqlite3's native backup API) to `server/data/backups/` — once on
+every boot and daily at 02:05. Only the newest 14 are kept (override with
+`BACKUP_KEEP` in the environment). The folder is gitignored.
+
+**Restore from a backup.** Stop the server first, then:
+
+```bash
+cd server
+npm run restore                                # lists available backups
+npm run restore -- choopi-20260704-020500.db   # restores that file
+```
+
+The script refuses to run while the server holds the DB, saves the current
+live DB as `pre-restore-<timestamp>.db` before overwriting anything, and
+finishes with an integrity check. Start the server again afterwards.
+
+**JSON export / import.** `GET /api/settings/export` downloads the full
+ledger as JSON (schema_version 2 — investments, transactions, snapshots, RSU
+grants + vesting events). `POST /api/settings/import` restores such a file
+onto your account: it takes a native DB backup first, then replaces your rows
+in a single transaction (ids are remapped, other accounts untouched):
+
+```bash
+curl -b cookies.txt -X POST http://localhost:3001/api/settings/import \
+  -H 'Content-Type: application/json' --data @choopi-backup-2026-07-04.json
+```

@@ -29,6 +29,8 @@ realizedRouter.get("/", (req, res) => {
       .all(req.user!.id, from, to) as any[];
 
     // Aggregate — convert each row to NIS so mixed NIS/USD transactions sum correctly.
+    // Accuracy note: uses today's rate for historical rows; a stored per-row
+    // occurred_at rate would make past-year totals exact.
     const rate = getRateSync(db, req.user!.id).rate;
     let total_realized = 0;
     let total_dividends = 0;

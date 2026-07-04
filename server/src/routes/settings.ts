@@ -4,6 +4,8 @@ import { getDb } from "../db/init.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { ok, fail } from "../middleware/respond.js";
 import { takeSnapshot } from "../services/snapshot.js";
+import { runBackup } from "../services/backup.js";
+import { buildExport, importUserData, validateImportPayload, type ExportPayload } from "../services/importExport.js";
 
 export const settingsRouter = Router();
 settingsRouter.use(requireAuth);
@@ -180,40 +182,36 @@ settingsRouter.post("/snapshot", (req, res) => {
   }
 });
 
-// GET /api/settings/export — full JSON backup of user's ledger
+// GET /api/settings/export — full JSON backup of user's ledger (schema_version 2)
 settingsRouter.get("/export", (req, res) => {
   try {
     const db = getDb();
-    const uid = req.user!.id;
-
-    const user = db
-      .prepare("SELECT id, username, display_name, display_currency, theme, created_at FROM users WHERE id = ?")
-      .get(uid);
-
-    const investments = db
-      .prepare("SELECT * FROM investments WHERE user_id = ? ORDER BY created_at")
-      .all(uid);
-
-    const transactions = db
-      .prepare("SELECT * FROM transactions WHERE user_id = ? ORDER BY occurred_at")
-      .all(uid);
-
-    const snapshots = db
-      .prepare("SELECT * FROM portfolio_snapshots WHERE user_id = ? ORDER BY snapshot_at")
-      .all(uid);
-
-    const payload = {
-      exported_at: new Date().toISOString(),
-      schema_version: 1,
-      user,
-      investments,
-      transactions,
-      snapshots,
-    };
+    const payload = buildExport(db, req.user!.id);
 
     res.setHeader("Content-Type", "application/json");
     res.setHeader("Content-Disposition", `attachment; filename="choopi-backup-${new Date().toISOString().slice(0,10)}.json"`);
     res.json(payload);
+  } catch (e) {
+    fail(res, (e as Error).message, 500);
+  }
+});
+
+// POST /api/settings/import — restore a JSON export (schema_version 1 or 2).
+// Takes a native DB backup first, then replaces the user's rows in one
+// transaction with full id remapping. Other users' rows are untouched.
+settingsRouter.post("/import", async (req, res) => {
+  try {
+    const db = getDb();
+    const payload = req.body as ExportPayload;
+
+    const invalid = validateImportPayload(payload);
+    if (invalid) return fail(res, invalid);
+
+    const backup = await runBackup(db);
+    const counts = importUserData(db, req.user!.id, payload);
+    takeSnapshot(db, req.user!.id);
+
+    ok(res, { ok: true, backup: backup.file, imported: counts }, 201);
   } catch (e) {
     fail(res, (e as Error).message, 500);
   }

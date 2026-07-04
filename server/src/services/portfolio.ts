@@ -341,6 +341,9 @@ export function computePortfolio(
   // ── Realized & dividends YTD — per-row currency conversion ──────────────────
   // Each row is converted to NIS via toNis() using its own currency and the
   // current fx rate before summing (mixes NIS + USD rows safely).
+  // Accuracy note: this uses TODAY'S rate for historical rows. Storing the
+  // USD→NIS rate at each row's occurred_at (cf. fx_rate_at_buy on BUYs) and
+  // converting with it here would make historical realized figures exact.
   const yearStart = `${new Date().getFullYear()}-01-01T00:00:00Z`;
 
   const sellRows = db

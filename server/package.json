@@ -7,7 +7,8 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc && mkdir -p dist/db/migrations && cp src/db/schema.sql dist/db/ && cp src/db/migrations/*.sql dist/db/migrations/",
     "start": "node dist/index.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "restore": "tsx scripts/restore.ts"
   },
   "dependencies": {
     "bcrypt": "^5.1.1",

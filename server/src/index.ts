@@ -26,6 +26,7 @@ import { rsuRouter } from "./routes/rsu.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { takeSnapshot } from "./services/snapshot.js";
 import { getRate } from "./services/fx.js";
+import { runBackup, hasRecentBackup } from "./services/backup.js";
 
 const app = express();
 const PORT = Number(process.env.PORT ?? 3001);
@@ -39,7 +40,8 @@ app.use(cors({
   origin: (_origin, cb) => cb(null, true), // LAN — security handled by auth cookie
   credentials: true,
 }));
-app.use(express.json());
+// 20mb: POST /api/settings/import receives a full JSON export of the ledger.
+app.use(express.json({ limit: "20mb" }));
 app.use(cookieParser());
 
 // Initialise DB + run migrations on startup
@@ -64,6 +66,15 @@ getRate(getDb()).then(r => {
   ).all(cutoff) as { id: number }[];
   for (const u of users) takeSnapshot(db, u.id);
   if (users.length > 0) console.log(`[boot] Backfilled snapshots for ${users.length} user(s)`);
+
+  // Boot backup — the cron below only fires if the machine is awake at 02:05.
+  // Skipped when a backup from the last 12h exists, so rapid dev restarts
+  // (tsx watch) don't churn the retention window.
+  if (!hasRecentBackup(12)) {
+    runBackup(db)
+      .then(r => console.log(`[backup] ${r.file}${r.pruned.length ? ` (pruned ${r.pruned.length})` : ""}`))
+      .catch(err => console.error("[backup] boot backup failed:", (err as Error).message));
+  }
 });
 
 // Routes
@@ -110,4 +121,11 @@ cron.schedule("0 2 * * *", () => {
     takeSnapshot(db, u.id);
   }
   console.log(`[cron] Snapshotted ${users.length} user(s)`);
+});
+
+// ── Daily DB backup at 02:05 local (WAL-safe hot copy + retention) ────────────
+cron.schedule("5 2 * * *", () => {
+  runBackup(getDb())
+    .then(r => console.log(`[cron] Backup ${r.file}${r.pruned.length ? ` (pruned ${r.pruned.length})` : ""}`))
+    .catch(err => console.error("[cron] backup failed:", (err as Error).message));
 });
