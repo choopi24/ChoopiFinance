@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "./Modal";
 import { LineChart } from "./LineChart";
 import { useEditInvestment } from "../hooks/useInvestments";
@@ -65,7 +65,20 @@ export function ProjectionPanel({ investment: inv, currency, fxRate, onClose }: 
 
   // ── Debounced persistence of return + contribution ──────────────────────────
   // Canonical storage: expected_annual_return as a decimal, monthly_contribution in NIS.
+  //
+  // `edited` gates persistence on an actual user keystroke: the contribution seed
+  // is rounded to whole units in the DISPLAY currency, so on mount the recomputed
+  // NIS value can differ from the stored one — without the gate, merely opening
+  // the panel would PATCH that rounding drift to the server.
+  //
+  // `pending` holds the latest unsaved values so closing the panel before the
+  // debounce fires flushes the edit instead of silently dropping it.
+  const edited = useRef(false);
+  const pending = useRef<{ ret: number | null; contrib: number | null } | null>(null);
+
   useEffect(() => {
+    if (!edited.current) return;
+
     const persistedReturn = inv.expected_annual_return ?? null;
     const persistedContribNis = inv.monthly_contribution ?? null;
 
@@ -75,13 +88,18 @@ export function ProjectionPanel({ investment: inv, currency, fxRate, onClose }: 
         ? null
         : Math.round((currency === "USD" ? contribDisplay * fxRate : contribDisplay) * 100) / 100;
 
-    // No change (also the initial-mount case) → don't persist.
-    if (nextReturn === persistedReturn && nextContribNis === persistedContribNis) return;
+    // No change → nothing pending to persist.
+    if (nextReturn === persistedReturn && nextContribNis === persistedContribNis) {
+      pending.current = null;
+      return;
+    }
     // Skip obviously invalid input rather than PATCHing NaN.
     if (returnPct !== "" && !Number.isFinite(nextReturn as number)) return;
     if (contribInput !== "" && !Number.isFinite(nextContribNis as number)) return;
 
+    pending.current = { ret: nextReturn, contrib: nextContribNis };
     const t = setTimeout(() => {
+      pending.current = null;
       editMut.mutate({
         id: inv.id,
         body: { expected_annual_return: nextReturn, monthly_contribution: nextContribNis },
@@ -95,8 +113,21 @@ export function ProjectionPanel({ investment: inv, currency, fxRate, onClose }: 
     inv.id, inv.expected_annual_return, inv.monthly_contribution,
   ]);
 
+  // Flush any debounce-pending edit on close so it isn't lost with the timer.
+  function handleClose() {
+    if (pending.current) {
+      const p = pending.current;
+      pending.current = null;
+      editMut.mutate({
+        id: inv.id,
+        body: { expected_annual_return: p.ret, monthly_contribution: p.contrib },
+      });
+    }
+    onClose();
+  }
+
   return (
-    <Modal open onClose={onClose} title={`Projection — ${inv.name}`} width={620}>
+    <Modal open onClose={handleClose} title={`Projection — ${inv.name}`} width={620}>
       <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
         {/* Controls */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
@@ -122,7 +153,7 @@ export function ProjectionPanel({ investment: inv, currency, fxRate, onClose }: 
               step="0.1"
               className="cf-num"
               value={returnPct}
-              onChange={e => setReturnPct(e.target.value)}
+              onChange={e => { edited.current = true; setReturnPct(e.target.value); }}
               placeholder={String(+(defaultReturn * 100).toFixed(2))}
             />
           </div>
@@ -135,7 +166,7 @@ export function ProjectionPanel({ investment: inv, currency, fxRate, onClose }: 
               step="any"
               className="cf-num"
               value={contribInput}
-              onChange={e => setContribInput(e.target.value)}
+              onChange={e => { edited.current = true; setContribInput(e.target.value); }}
               placeholder="0"
             />
           </div>

@@ -6,6 +6,7 @@ import { recomputeRealized } from "../services/fifo.js";
 import { takeSnapshot } from "../services/snapshot.js";
 import { refreshPrice } from "../services/prices.js";
 import { getRateSync } from "../services/fx.js";
+import { validateTransactionPatch } from "./editValidation.js";
 
 export const transactionsRouter = Router();
 transactionsRouter.use(requireAuth);
@@ -264,7 +265,8 @@ transactionsRouter.post("/bulk", (req, res) => {
   }
 });
 
-// PATCH /api/transactions/:id — edit (recomputes FIFO if SELL)
+// PATCH /api/transactions/:id — partial edit; validates, keeps total_amount
+// consistent with units × price on BUY/SELL, then recomputes FIFO downstream.
 transactionsRouter.patch("/:id", (req, res) => {
   try {
     const db = getDb();
@@ -274,21 +276,13 @@ transactionsRouter.patch("/:id", (req, res) => {
     ).get(txId, req.user!.id) as any;
     if (!tx) return fail(res, "Transaction not found", 404);
 
-    const allowed = ["units", "price_per_unit", "total_amount", "currency",
-                     "occurred_at", "notes", "fx_rate_at_buy"];
-    const updates: string[] = [];
-    const values: unknown[] = [];
+    const patch = validateTransactionPatch(tx, req.body as Record<string, unknown>);
+    if ("error" in patch) return fail(res, patch.error);
 
-    for (const key of allowed) {
-      if (key in req.body) {
-        updates.push(`${key} = ?`);
-        values.push(req.body[key] ?? null);
-      }
-    }
-    if (updates.length === 0) return fail(res, "No valid fields to update");
-
-    values.push(txId);
-    db.prepare(`UPDATE transactions SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+    const keys = Object.keys(patch.fields);
+    db.prepare(
+      `UPDATE transactions SET ${keys.map(k => `${k} = ?`).join(", ")} WHERE id = ?`
+    ).run(...keys.map(k => patch.fields[k]), txId);
 
     const inv = db.prepare("SELECT type FROM investments WHERE id = ?").get(tx.investment_id) as any;
     if (MARKET_TYPES.has(inv.type)) {

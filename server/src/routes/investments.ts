@@ -10,6 +10,7 @@ import {
   validateMonthlyContribution,
   isError,
 } from "./projectionValidation.js";
+import { validateInvestmentPatchValue } from "./editValidation.js";
 
 export const investmentsRouter = Router();
 investmentsRouter.use(requireAuth);
@@ -191,8 +192,12 @@ investmentsRouter.patch("/:id", (req, res) => {
         updates.push("monthly_contribution = ?");
         values.push(r.value);
       } else {
+        // name / etf_kind / liquid_date / deposit_currency / broker / isin / fund_track:
+        // validate + normalize instead of surfacing SQLite CHECK failures as 500s.
+        const r = validateInvestmentPatchValue(key, req.body[key]);
+        if ("error" in r) return fail(res, r.error);
         updates.push(`${key} = ?`);
-        values.push(req.body[key] ?? null);
+        values.push(r.value);
       }
     }
     if (updates.length === 0) return fail(res, "No valid fields to update");

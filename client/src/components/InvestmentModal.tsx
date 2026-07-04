@@ -1039,13 +1039,16 @@ function EditMetaForm({
     setError(null);
     if (!name.trim()) { setError("Name is required"); return; }
     try {
+      // Empty inputs send explicit null (clear the field). `undefined` keys are
+      // dropped by JSON.stringify, which made clearing impossible — the server
+      // never saw the field and the old value silently survived.
       await editMut.mutateAsync({ id: investment.id, body: {
         name: name.trim(),
-        broker: broker.trim() || undefined,
-        isin: isin.trim().toUpperCase() || undefined,
-        etf_kind: (etfKind || undefined) as "accumulating" | "distributing" | undefined,
-        liquid_date: liquidDate || undefined,
-        monthly_deposit: monthlyDep ? Number(monthlyDep) : undefined,
+        broker: broker.trim() || null,
+        isin: isin.trim().toUpperCase() || null,
+        etf_kind: (etfKind || null) as "accumulating" | "distributing" | null,
+        liquid_date: liquidDate || null,
+        monthly_deposit: monthlyDep === "" ? null : Number(monthlyDep),
         deposit_currency: isIlFund ? depCcy : undefined,
         fee_deposit_pct: isIlFund ? (feeDeposit !== "" ? Number(feeDeposit) : null) : undefined,
         fee_balance_pct: isIlFund ? (feeBalance !== "" ? Number(feeBalance) : null) : undefined,

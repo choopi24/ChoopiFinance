@@ -250,12 +250,40 @@ export function useAddTransaction() {
   });
 }
 
+/**
+ * Body for PATCH /investments/:id. Distinct from CreateInvestmentBody because
+ * partial edits must be able to CLEAR a field: explicit null clears it, while
+ * an absent key leaves it untouched (undefined is dropped by JSON.stringify).
+ */
+export interface EditInvestmentBody {
+  name?: string;
+  ticker?: string | null;
+  isin?: string | null;
+  broker?: string | null;
+  etf_kind?: "accumulating" | "distributing" | null;
+  liquid_date?: string | null;
+  monthly_deposit?: number | null;
+  deposit_currency?: string;
+  expected_annual_return?: number | null;
+  monthly_contribution?: number | null;
+  fund_id?: number | null;
+  fund_track?: string | null;
+  fee_deposit_pct?: number | null;
+  fee_balance_pct?: number | null;
+}
+
 export function useEditInvestment() {
   const qc = useQueryClient();
-  return useMutation<Investment, Error, { id: number; body: Partial<CreateInvestmentBody> }>({
+  return useMutation<Investment, Error, { id: number; body: EditInvestmentBody }>({
     mutationFn: ({ id, body }) =>
       api.patch<ApiOk<Investment>>(`/investments/${id}`, body).then(r => r.data),
-    onSuccess: () => {
+    onSuccess: updated => {
+      // Write the server's enriched row straight into every cached list —
+      // synchronously — so re-opening the edit form right away seeds from
+      // post-edit values instead of the pre-refetch cache.
+      qc.setQueriesData<Investment[]>({ queryKey: ["investments"] }, old =>
+        Array.isArray(old) ? old.map(i => (i.id === updated.id ? updated : i)) : old
+      );
       qc.invalidateQueries({ queryKey: ["investments"] });
       qc.invalidateQueries({ queryKey: ["portfolio"] });
       qc.invalidateQueries({ queryKey: ["realized"] });
