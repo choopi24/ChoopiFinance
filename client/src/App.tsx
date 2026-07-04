@@ -8,6 +8,7 @@ import LoginPage from "./pages/auth/LoginPage";
 
 const Dashboard          = lazy(() => import("./pages/Dashboard"));
 const InvestmentsPage    = lazy(() => import("./pages/Investments"));
+const RsuGrantsPage      = lazy(() => import("./pages/RsuGrants"));
 const TransactionsPage   = lazy(() => import("./pages/Transactions"));
 const RealizedGainsPage  = lazy(() => import("./pages/RealizedGains"));
 const SettingsPage       = lazy(() => import("./pages/Settings"));
@@ -71,6 +72,17 @@ function AppRoutes() {
           <RequireAuth>
             <Suspense fallback={<PageLoader />}>
               <InvestmentsPage />
+            </Suspense>
+          </RequireAuth>
+        }
+      />
+
+      <Route
+        path="/rsu"
+        element={
+          <RequireAuth>
+            <Suspense fallback={<PageLoader />}>
+              <RsuGrantsPage />
             </Suspense>
           </RequireAuth>
         }

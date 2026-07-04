@@ -22,6 +22,7 @@ import { lookupRouter } from "./routes/lookup.js";
 import { csvRouter } from "./routes/csv.js";
 import { searchRouter } from "./routes/search.js";
 import { ilFundsRouter } from "./routes/ilFunds.js";
+import { rsuRouter } from "./routes/rsu.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { takeSnapshot } from "./services/snapshot.js";
 import { getRate } from "./services/fx.js";
@@ -83,6 +84,7 @@ app.use("/api/lookup",       lookupRouter);
 app.use("/api/csv",          csvRouter);
 app.use("/api/search",       searchRouter);
 app.use("/api/il-funds",     ilFundsRouter);
+app.use("/api/rsu",          rsuRouter);
 
 app.use(errorHandler);
 

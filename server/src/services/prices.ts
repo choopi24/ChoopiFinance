@@ -178,15 +178,17 @@ export async function refreshPrice(
     await refreshCryptoBatch(db, [ticker]);
   } else if (inv.type === "stock" || inv.type === "etf") {
     await refreshStockSingle(db, ticker, inv.type as "stock" | "etf");
+  } else if (inv.type === "rsu") {
+    await refreshStockSingle(db, ticker, "stock"); // RSUs price as their underlying stock
   } else {
-    return null; // pension / education / other have no market price
+    return null; // manual fund types have no market price
   }
 
   const row = db
     .prepare<[string, string], PriceResult>(
       "SELECT symbol, price, currency, fetched_at FROM price_cache WHERE symbol = ? AND asset_type = ?"
     )
-    .get(ticker, inv.type);
+    .get(ticker, inv.type === "rsu" ? "stock" : inv.type);
   return row ?? null;
 }
 
@@ -217,6 +219,8 @@ export async function batchRefreshAll(
       cryptoTickers.push(inv.ticker);
     } else if ((inv.type === "stock" || inv.type === "etf") && inv.ticker) {
       stockEtfRows.push({ ticker: inv.ticker, type: inv.type });
+    } else if (inv.type === "rsu" && inv.ticker) {
+      stockEtfRows.push({ ticker: inv.ticker, type: "stock" });
     } else if (inv.fund_id != null) {
       const dataset = datasetForType(inv.type);
       if (dataset) ilFunds.set(`${dataset}:${inv.fund_id}`, { dataset, fundId: inv.fund_id });

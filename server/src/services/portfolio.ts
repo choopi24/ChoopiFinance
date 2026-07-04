@@ -19,8 +19,13 @@ import { computePosition, computeManualPosition } from "./fifo.js";
 import { getRateSync, toNis } from "./fx.js";
 import { datasetForType, estimateFromCache } from "./israelFunds.js";
 
-const MARKET_TYPES = new Set(["crypto", "stock", "etf"]);
+const MARKET_TYPES = new Set(["crypto", "stock", "etf", "rsu"]);
 const STALE_30 = 30;
+
+/** price_cache asset_type for a market investment — RSUs are priced as their underlying stock. */
+export function priceCacheType(invType: string): string {
+  return invType === "rsu" ? "stock" : invType;
+}
 const STALE_60 = 60;
 
 // ── FX helpers ────────────────────────────────────────────────────────────────
@@ -158,7 +163,7 @@ export function enrichInvestment(
           .prepare<[string, string], PriceRow>(
             "SELECT price, currency, fetched_at FROM price_cache WHERE symbol = ? AND asset_type = ?"
           )
-          .get(symbol, inv.type) as PriceRow | undefined)
+          .get(symbol, priceCacheType(inv.type)) as PriceRow | undefined)
       : undefined;
 
     const current_price = priceRow?.price ?? null;

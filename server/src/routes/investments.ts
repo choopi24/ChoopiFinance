@@ -14,9 +14,10 @@ import {
 export const investmentsRouter = Router();
 investmentsRouter.use(requireAuth);
 
-const MARKET_TYPES = new Set(["crypto", "stock", "etf"]);
+const MARKET_TYPES = new Set(["crypto", "stock", "etf", "rsu"]);
 const MANUAL_TYPES = new Set(["pension", "gemel", "education", "money_market", "other"]);
-const VALID_TYPES   = new Set([...MARKET_TYPES, ...MANUAL_TYPES]);
+// RSU investments are created through /api/rsu (grant + schedule), not this generic route.
+const VALID_TYPES   = new Set([...MARKET_TYPES, ...MANUAL_TYPES].filter(t => t !== "rsu"));
 
 // ── Shared SELECT for enrichment ─────────────────────────────────────────────
 

@@ -1,5 +1,5 @@
 import { NavLink } from "react-router-dom";
-import { LayoutDashboard, TrendingUp, ArrowLeftRight, Award, Settings, LogOut } from "lucide-react";
+import { LayoutDashboard, TrendingUp, Layers, ArrowLeftRight, Award, Settings, LogOut } from "lucide-react";
 import type { NavId } from "@choopi/shared";
 
 interface NavItem {
@@ -12,6 +12,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { id: "dashboard",    label: "Dashboard",    icon: <LayoutDashboard  size={18} strokeWidth={1.6} />, to: "/dashboard" },
   { id: "investments",  label: "Investments",  icon: <TrendingUp       size={18} strokeWidth={1.6} />, to: "/investments" },
+  { id: "rsu",          label: "RSU Grants",   icon: <Layers           size={18} strokeWidth={1.6} />, to: "/rsu" },
   { id: "transactions", label: "Transactions", icon: <ArrowLeftRight   size={18} strokeWidth={1.6} />, to: "/transactions" },
   { id: "realized",     label: "Realized P&L", icon: <Award            size={18} strokeWidth={1.6} />, to: "/realized" },
   { id: "settings",     label: "Settings",     icon: <Settings         size={18} strokeWidth={1.6} />, to: "/settings" },

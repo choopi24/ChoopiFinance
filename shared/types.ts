@@ -1,7 +1,8 @@
 // Israeli regulated funds: pension = קרן פנסיה, gemel = קופת גמל,
 // education = קרן השתלמות, money_market = קרן כספית.
+// rsu = equity-compensation grant; only vested units count toward net worth.
 export type AssetType =
-  | "crypto" | "stock" | "etf"
+  | "crypto" | "stock" | "etf" | "rsu"
   | "pension" | "gemel" | "education" | "money_market" | "other";
 
 /** Manual (non-market) types: value tracked via UPDATE balance snapshots. */
@@ -13,6 +14,7 @@ export const ASSET_TYPE_LABELS: Record<AssetType, string> = {
   crypto: "Crypto",
   stock: "Stocks",
   etf: "ETFs",
+  rsu: "RSUs",
   pension: "Pension",
   gemel: "Gemel",
   education: "Study fund",
@@ -25,7 +27,7 @@ export type Currency = "NIS" | "USD";
 // "UPD" kept for display abbreviation compatibility.
 export type TransactionKind = "BUY" | "SELL" | "DIV" | "UPDATE" | "DEPOSIT" | "UPD";
 export type Theme = "light" | "dark";
-export type NavId = "dashboard" | "investments" | "transactions" | "realized" | "settings";
+export type NavId = "dashboard" | "investments" | "rsu" | "transactions" | "realized" | "settings";
 
 export interface User {
   id: number;
@@ -75,6 +77,7 @@ export const DEFAULT_ANNUAL_RETURNS: Record<AssetType, number> = {
   money_market: 0.04,
   etf:          0.07,
   stock:        0.08,
+  rsu:          0.08,
   crypto:       0.10,
   other:        0.05,
 };

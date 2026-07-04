@@ -10,6 +10,7 @@ const PAGES = [
   { id: "dashboard",    label: "Dashboard",     href: "/dashboard",    icon: "dashboard" },
   { id: "investments",  label: "Investments",   href: "/investments",  icon: "investments" },
   { id: "transactions", label: "Transactions",  href: "/transactions", icon: "transactions" },
+  { id: "rsu",          label: "RSU Grants",    href: "/rsu",          icon: "investments" },
   { id: "realized",     label: "Realized P&L",  href: "/realized",     icon: "realized" },
   { id: "settings",     label: "Settings",      href: "/settings",     icon: "settings" },
 ];

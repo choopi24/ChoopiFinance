@@ -13,7 +13,8 @@ transactionsRouter.use(requireAuth);
 const MARKET_KINDS = new Set(["BUY", "SELL", "DIV"]);
 // UPDATE = balance snapshot; DEPOSIT = actual cash contribution (education/other P/L model)
 const MANUAL_KINDS = new Set(["UPDATE", "DEPOSIT"]);
-const MARKET_TYPES = new Set(["crypto", "stock", "etf"]);
+// rsu: SELLs go through here like any market asset; BUY lots normally come from the vesting engine.
+const MARKET_TYPES = new Set(["crypto", "stock", "etf", "rsu"]);
 
 // GET /api/transactions — paginated ledger
 transactionsRouter.get("/", (req, res) => {

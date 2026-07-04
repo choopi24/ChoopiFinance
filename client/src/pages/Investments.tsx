@@ -32,6 +32,7 @@ const FILTER_TYPES: { key: string; label: string }[] = [
   { key: "crypto",       label: "Crypto" },
   { key: "stock",        label: "Stocks" },
   { key: "etf",          label: "ETFs" },
+  { key: "rsu",          label: "RSUs" },
   { key: "pension",      label: "Pension" },
   { key: "gemel",        label: "Gemel" },
   { key: "education",    label: "Study fund" },

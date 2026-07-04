@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS investments (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  type             TEXT    NOT NULL CHECK(type IN ('crypto','stock','etf','pension','gemel','education','money_market','other')),
+  type             TEXT    NOT NULL CHECK(type IN ('crypto','stock','etf','rsu','pension','gemel','education','money_market','other')),
   name             TEXT    NOT NULL,
   ticker           TEXT,
   isin             TEXT,
@@ -105,6 +105,38 @@ CREATE TABLE IF NOT EXISTS price_cache (
   fetched_at  TEXT NOT NULL,
   PRIMARY KEY (symbol, asset_type)
 );
+
+-- ── RSU grants + vesting ──────────────────────────────────────────────────────
+-- Each grant is 1:1 with an investments row (type='rsu'). Vested events are
+-- materialized as BUY transactions (linked via transaction_id) so FIFO cost
+-- basis, valuation, FX, and realized P/L reuse the existing engines.
+CREATE TABLE IF NOT EXISTS rsu_grants (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  investment_id INTEGER NOT NULL UNIQUE REFERENCES investments(id) ON DELETE CASCADE,
+  user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  symbol        TEXT    NOT NULL,
+  company_name  TEXT,
+  grant_date    TEXT    NOT NULL,
+  total_units   REAL    NOT NULL CHECK(total_units > 0),
+  grant_price   REAL,
+  currency      TEXT    NOT NULL DEFAULT 'USD' CHECK(currency IN ('NIS','USD')),
+  notes         TEXT,
+  created_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  updated_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
+CREATE TABLE IF NOT EXISTS rsu_vesting_events (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  grant_id       INTEGER NOT NULL REFERENCES rsu_grants(id) ON DELETE CASCADE,
+  vest_date      TEXT    NOT NULL,
+  units          REAL    NOT NULL CHECK(units > 0),
+  fmv_at_vest    REAL,
+  status         TEXT    NOT NULL DEFAULT 'scheduled' CHECK(status IN ('scheduled','vested')),
+  transaction_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL,
+  created_at     TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_rsu_events_grant_date ON rsu_vesting_events(grant_id, vest_date);
 
 -- ── Israeli fund cache ────────────────────────────────────────────────────────
 -- Cached monthly rows from data.gov.il (Gemel-Net / Pensia-Net).
