@@ -69,6 +69,11 @@ body {
   text-rendering: optimizeLegibility;
   font-size: var(--text-base);
   line-height: 1.45;
+  /* Tabular figures app-wide: font-variant-numeric inherits, so every
+     monetary/percentage figure aligns in columns without per-spot styles.
+     Affects digit glyphs only — prose is unaffected. */
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
 }
 
 .mono {

@@ -243,16 +243,16 @@ export default function TransactionsPage() {
                         {tx.ticker && <div style={{ fontSize: 11, color: "var(--text-faint)" }}>{tx.ticker}</div>}
                       </td>
                       <td><KindChip kind={tx.kind} /></td>
-                      <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                      <td style={{ textAlign: "right"}}>
                         {tx.units != null ? tx.units.toLocaleString("he-IL", { maximumFractionDigits: 8 }) : "—"}
                       </td>
-                      <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                      <td style={{ textAlign: "right"}}>
                         {fmt(tx.price_per_unit, tx.currency)}
                       </td>
-                      <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                      <td style={{ textAlign: "right"}}>
                         {fmt(tx.total_amount, tx.currency)}
                       </td>
-                      <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", color: plColor }}>
+                      <td style={{ textAlign: "right", color: plColor }}>
                         {pl != null ? fmt(pl, tx.currency) : "—"}
                       </td>
                       <td style={{ maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-faint)", fontSize: 12 }}>

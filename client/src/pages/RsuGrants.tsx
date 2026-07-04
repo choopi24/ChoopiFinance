@@ -23,9 +23,6 @@ import {
 import { fmt, pct } from "../lib/fmt";
 import type { Currency } from "@choopi/shared";
 
-// All RSU money uses tabular figures so columns of numbers align.
-const TABULAR = { fontVariantNumeric: "tabular-nums" } as const;
-
 function today() { return new Date().toISOString().slice(0, 10); }
 
 function fmtUnits(n: number): string {
@@ -81,13 +78,13 @@ function EventRow({ event, currency }: { event: RsuEvent; currency: string }) {
       </td>
       <td>
         <input type="number" min="0" step="any" value={units} onChange={e => setUnits(e.target.value)}
-          className="mono" style={{ width: 100, fontSize: 12, ...TABULAR }} />
+          className="mono" style={{ width: 100, fontSize: 12 }} />
       </td>
       <td>
         <input type="number" min="0" step="any" value={fmv} onChange={e => setFmv(e.target.value)}
-          placeholder="auto" className="mono" style={{ width: 100, fontSize: 12, ...TABULAR }} />
+          placeholder="auto" className="mono" style={{ width: 100, fontSize: 12 }} />
       </td>
-      <td className="mono" style={{ fontSize: 12, ...TABULAR }}>
+      <td className="mono" style={{ fontSize: 12 }}>
         {event.status === "vested" && event.fmv_at_vest != null
           ? fmt(event.units * event.fmv_at_vest, { currency: currency as Currency })
           : "—"}
@@ -183,8 +180,8 @@ function GrantDetail({ grant, displayCcy, fxRate }: { grant: RsuGrant; displayCc
             {/* Add-event row */}
             <tr>
               <td><input type="date" value={newDate} onChange={e => setNewDate(e.target.value)} style={{ width: 150, fontSize: 12 }} /></td>
-              <td><input type="number" min="0" step="any" placeholder="units" value={newUnits} onChange={e => setNewUnits(e.target.value)} className="mono" style={{ width: 100, fontSize: 12, ...TABULAR }} /></td>
-              <td><input type="number" min="0" step="any" placeholder="optional" value={newFmv} onChange={e => setNewFmv(e.target.value)} className="mono" style={{ width: 100, fontSize: 12, ...TABULAR }} /></td>
+              <td><input type="number" min="0" step="any" placeholder="units" value={newUnits} onChange={e => setNewUnits(e.target.value)} className="mono" style={{ width: 100, fontSize: 12 }} /></td>
+              <td><input type="number" min="0" step="any" placeholder="optional" value={newFmv} onChange={e => setNewFmv(e.target.value)} className="mono" style={{ width: 100, fontSize: 12 }} /></td>
               <td colSpan={2} style={{ fontSize: 11, color: "var(--text-faint)" }}>Add a vesting event</td>
               <td>
                 <Button variant="ghost" size="sm" icon={<Plus size={13} strokeWidth={2} />}
@@ -204,11 +201,11 @@ function GrantDetail({ grant, displayCcy, fxRate }: { grant: RsuGrant; displayCc
       </div>
 
       <div style={{ display: "flex", gap: 18, marginTop: 10, fontSize: 12, color: "var(--text-soft)", flexWrap: "wrap" }}>
-        <span>Granted <span className="mono" style={TABULAR}>{fmtUnits(grant.total_units)}</span> units on {fmtDate(grant.grant_date)}</span>
+        <span>Granted <span className="mono">{fmtUnits(grant.total_units)}</span> units on {fmtDate(grant.grant_date)}</span>
         {grant.grant_price != null && (
-          <span>FMV at grant <span className="mono" style={TABULAR}>{fmt(grant.grant_price, { currency: grant.currency as Currency, decimals: 2 })}</span> (reference)</span>
+          <span>FMV at grant <span className="mono">{fmt(grant.grant_price, { currency: grant.currency as Currency, decimals: 2 })}</span> (reference)</span>
         )}
-        <span>Vested cost basis <span className="mono" style={TABULAR}>{fmt(vestedCost, { currency: displayCcy })}</span></span>
+        <span>Vested cost basis <span className="mono">{fmt(vestedCost, { currency: displayCcy })}</span></span>
         {grant.notes && <span dir="auto">{grant.notes}</span>}
       </div>
     </div>
@@ -245,7 +242,7 @@ function GrantCard({ grant, displayCcy, fxRate, isExpanded, onToggle }: {
             <div style={{ flex: 1, maxWidth: 220, height: 5, borderRadius: 3, background: "var(--border)", overflow: "hidden" }}>
               <div style={{ width: `${Math.min(100, vestedPct)}%`, height: "100%", background: "var(--emerald)" }} />
             </div>
-            <span className="mono" style={{ fontSize: 11, color: "var(--text-soft)", ...TABULAR }}>
+            <span className="mono" style={{ fontSize: 11, color: "var(--text-soft)" }}>
               {fmtUnits(grant.vested_units)} / {fmtUnits(grant.total_units)} vested
             </span>
           </div>
@@ -254,16 +251,16 @@ function GrantCard({ grant, displayCcy, fxRate, isExpanded, onToggle }: {
               <>
                 <CalendarClock size={11} strokeWidth={1.8} style={{ verticalAlign: -1, marginRight: 4 }} />
                 Next vest: {fmtDate(grant.next_vest_event.vest_date)} ·{" "}
-                <span className="mono" style={TABULAR}>{fmtUnits(grant.next_vest_event.units)}</span> units
+                <span className="mono">{fmtUnits(grant.next_vest_event.units)}</span> units
               </>
             ) : "Fully vested"}
           </div>
         </div>
         <div style={{ textAlign: "right" }}>
-          <div className="mono" style={{ fontSize: 14, fontWeight: 500, ...TABULAR }}>
+          <div className="mono" style={{ fontSize: 14, fontWeight: 500 }}>
             {fmt(value, { currency: displayCcy })}
           </div>
-          <div className={isPos ? "mono is-pos" : "mono is-neg"} style={{ fontSize: 11, marginTop: 2, ...TABULAR }}>
+          <div className={isPos ? "mono is-pos" : "mono is-neg"} style={{ fontSize: 11, marginTop: 2 }}>
             {isPos ? "+" : "−"}{fmt(Math.abs(unreal), { currency: displayCcy })}
             {inv?.unrealized_pct != null && <span style={{ marginLeft: 5 }}>{pct(inv.unrealized_pct)}</span>}
           </div>
@@ -391,14 +388,14 @@ function NewGrantModal({ onClose }: { onClose: () => void }) {
             </Field>
             <Field label="Total units granted">
               <input type="number" min="0" step="any" value={totalUnits} onChange={e => setTotal(e.target.value)}
-                placeholder="e.g. 4800" className="mono" style={TABULAR} />
+                placeholder="e.g. 4800" className="mono" />
             </Field>
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <Field label="FMV at grant (optional)" hint="Reference only — cost basis comes from FMV at each vest">
               <input type="number" min="0" step="any" value={grantPrice} onChange={e => setPrice(e.target.value)}
-                placeholder="—" className="mono" style={TABULAR} />
+                placeholder="—" className="mono" />
             </Field>
             <Field label="Currency">
               <Segment options={CCY_OPTIONS} value={currency} onChange={setCurrency} />
@@ -440,11 +437,11 @@ function NewGrantModal({ onClose }: { onClose: () => void }) {
                       onChange={e => setRows(rs => rs.map(r => r._id === row._id ? { ...r, vest_date: e.target.value } : r))} />
                   </Field>
                   <Field label="Units">
-                    <input type="number" min="0" step="any" value={row.units} className="mono" style={TABULAR}
+                    <input type="number" min="0" step="any" value={row.units} className="mono"
                       onChange={e => setRows(rs => rs.map(r => r._id === row._id ? { ...r, units: e.target.value } : r))} />
                   </Field>
                   <Field label="FMV at vest (optional)">
-                    <input type="number" min="0" step="any" value={row.fmv} placeholder="auto-fetch" className="mono" style={TABULAR}
+                    <input type="number" min="0" step="any" value={row.fmv} placeholder="auto-fetch" className="mono"
                       onChange={e => setRows(rs => rs.map(r => r._id === row._id ? { ...r, fmv: e.target.value } : r))} />
                   </Field>
                   <button className="cf-icon-btn" style={{ marginBottom: 2, color: "var(--rose)" }} title="Remove"
@@ -458,7 +455,7 @@ function NewGrantModal({ onClose }: { onClose: () => void }) {
                   onClick={() => setRows(rs => [...rs, { _id: crypto.randomUUID(), vest_date: "", units: "", fmv: "" }])}>
                   Add event
                 </Button>
-                <span className="mono" style={{ fontSize: 12, ...TABULAR, color: Math.abs(manualSum - totalNum) < 1e-6 ? "var(--emerald)" : "var(--amber)" }}>
+                <span className="mono" style={{ fontSize: 12 , color: Math.abs(manualSum - totalNum) < 1e-6 ? "var(--emerald)" : "var(--amber)" }}>
                   {fmtUnits(manualSum)} / {fmtUnits(totalNum)} units
                 </span>
               </div>
@@ -533,16 +530,16 @@ export default function RsuGrants() {
             {grants.length > 0 && (
               <>
                 {" · "}vested value{" "}
-                <span className="mono" style={TABULAR}>
+                <span className="mono">
                   {fmt(toDisplayCurrency(totals.value, displayCcy, fxRate), { currency: displayCcy })}
                 </span>
                 {" · "}
-                <span className={`mono ${totals.unrealized >= 0 ? "is-pos" : "is-neg"}`} style={TABULAR}>
+                <span className={`mono ${totals.unrealized >= 0 ? "is-pos" : "is-neg"}`}>
                   {totals.unrealized >= 0 ? "+" : "−"}
                   {fmt(Math.abs(toDisplayCurrency(totals.unrealized, displayCcy, fxRate)), { currency: displayCcy })}
                 </span>
                 {" unrealized · "}
-                <span className="mono" style={TABULAR}>{fmtUnits(totals.unvested)}</span> units unvested
+                <span className="mono">{fmtUnits(totals.unvested)}</span> units unvested
               </>
             )}
           </p>

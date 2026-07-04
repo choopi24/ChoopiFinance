@@ -111,13 +111,13 @@ function AssetRow({
         </td>
         <td>{typeLabel}</td>
         <td style={{ textAlign: "right" }}>{asset.count}</td>
-        <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", color: asset.realized >= 0 ? "var(--emerald)" : "var(--rose)" }}>
+        <td style={{ textAlign: "right", color: asset.realized >= 0 ? "var(--emerald)" : "var(--rose)" }}>
           {asset.realized >= 0 ? "+" : ""}{fmt(asset.realized, { currency: "NIS" })}
         </td>
-        <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", color: asset.dividends > 0 ? "var(--emerald)" : undefined }}>
+        <td style={{ textAlign: "right", color: asset.dividends > 0 ? "var(--emerald)" : undefined }}>
           {asset.dividends > 0 ? "+" : ""}{fmt(asset.dividends, { currency: "NIS" })}
         </td>
-        <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 600, color: total >= 0 ? "var(--emerald)" : "var(--rose)" }}>
+        <td style={{ textAlign: "right", fontWeight: 600, color: total >= 0 ? "var(--emerald)" : "var(--rose)" }}>
           {total >= 0 ? "+" : ""}{fmt(total, { currency: "NIS" })}
         </td>
         <td style={{ width: 28 }}>
@@ -130,10 +130,10 @@ function AssetRow({
             {fmtDate(tx.occurred_at)} — {tx.kind === "DIV" ? "Dividend" : "Sell"}
           </td>
           <td></td>
-          <td style={{ textAlign: "right", fontSize: 12, fontVariantNumeric: "tabular-nums", color: (tx.realized_pl ?? 0) >= 0 ? "var(--emerald)" : "var(--rose)" }}>
+          <td style={{ textAlign: "right", fontSize: 12, color: (tx.realized_pl ?? 0) >= 0 ? "var(--emerald)" : "var(--rose)" }}>
             {tx.kind === "SELL" ? (tx.realized_pl != null ? fmt(tx.realized_pl, { currency: "NIS" }) : "—") : "—"}
           </td>
-          <td style={{ textAlign: "right", fontSize: 12, fontVariantNumeric: "tabular-nums", color: "var(--emerald)" }}>
+          <td style={{ textAlign: "right", fontSize: 12, color: "var(--emerald)" }}>
             {tx.kind === "DIV" ? fmt(tx.total_amount, { currency: "NIS" }) : "—"}
           </td>
           <td></td>
