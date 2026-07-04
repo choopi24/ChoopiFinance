@@ -52,7 +52,7 @@ export function useRealizedYear(year: number) {
     queryKey: ["realized", year],
     queryFn: () =>
       api.get<ApiOk<any>>(`/realized?year=${year}`).then(r => r.data),
-    staleTime: 60_000,
+    staleTime: 10_000,
   });
 }
 
@@ -62,6 +62,6 @@ export function useRealizedYears() {
     queryFn: () =>
       api.get<ApiOk<{ years: RealizedYear[] }>>("/realized/years")
         .then(r => r.data.years),
-    staleTime: 60_000,
+    staleTime: 10_000,
   });
 }

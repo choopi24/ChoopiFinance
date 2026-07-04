@@ -9,9 +9,10 @@ interface ModalProps {
   children: ReactNode;
   footer?: ReactNode;
   width?: number;
+  className?: string;
 }
 
-export function Modal({ open, onClose, title, children, footer, width = 520 }: ModalProps) {
+export function Modal({ open, onClose, title, children, footer, width = 520, className = "" }: ModalProps) {
   const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -35,7 +36,7 @@ export function Modal({ open, onClose, title, children, footer, width = 520 }: M
     <div className="cf-modal-backdrop" onClick={onClose}>
       <div
         ref={panelRef}
-        className="cf-modal"
+        className={`cf-modal ${className}`.trim()}
         style={{ maxWidth: width }}
         onClick={(e) => e.stopPropagation()}
         role="dialog"

@@ -20,7 +20,7 @@ export default function Hello() {
           position: "fixed",
           inset: 0,
           background:
-            "radial-gradient(1200px 400px at 80% -10%, rgba(124,58,237,0.10), transparent 60%)",
+            "radial-gradient(1200px 400px at 80% -10%, rgba(47,107,237,0.10), transparent 60%)",
           pointerEvents: "none",
         }}
       />
@@ -34,7 +34,7 @@ export default function Hello() {
             letterSpacing: "0.2em",
             textTransform: "uppercase",
             fontWeight: 600,
-            color: "var(--grad-from)",
+            color: "var(--accent)",
           }}
         >
           Choopi Finance · scaffold
@@ -43,7 +43,7 @@ export default function Hello() {
         {/* Hero headline — IBM Plex Serif italic + brand gradient */}
         <h1
           style={{
-            fontFamily: "var(--font-serif)",
+            fontFamily: "var(--font-sans)",
             fontStyle: "italic",
             fontWeight: 400,
             fontSize: "clamp(52px, 10vw, 96px)",
@@ -51,7 +51,7 @@ export default function Hello() {
             letterSpacing: "-0.025em",
             margin: 0,
             background:
-              "linear-gradient(135deg, var(--grad-from) 0%, var(--grad-mid) 50%, var(--grad-to) 100%)",
+              "linear-gradient(135deg, var(--accent) 0%, var(--accent) 50%, var(--accent) 100%)",
             WebkitBackgroundClip: "text",
             WebkitTextFillColor: "transparent",
             backgroundClip: "text",
@@ -79,7 +79,7 @@ export default function Hello() {
         {[
           { bg: "var(--bg)", label: "--bg" },
           { bg: "var(--surface)", label: "--surface", border: "1px solid var(--border)" },
-          { bg: "linear-gradient(135deg, var(--grad-from), var(--grad-to))", label: "gradient" },
+          { bg: "linear-gradient(135deg, var(--accent), var(--accent))", label: "gradient" },
           { bg: "var(--emerald)", label: "--emerald" },
           { bg: "var(--rose)", label: "--rose" },
         ].map(({ bg, label, border }) => (

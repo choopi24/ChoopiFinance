@@ -115,8 +115,8 @@ export default function ComponentsPage() {
         display: "flex", alignItems: "center", justifyContent: "space-between",
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div className="cf-brand-mark" style={{ width: 28, height: 28, fontSize: 13, background: "linear-gradient(135deg,var(--grad-from),var(--grad-to))", color: "#fff", display: "grid", placeItems: "center", borderRadius: 8 }}>C</div>
-          <span style={{ fontFamily: "var(--font-serif)", fontStyle: "italic", fontSize: 18 }}>choopi</span>
+          <div className="cf-brand-mark" style={{ width: 28, height: 28, fontSize: 13, background: "linear-gradient(135deg,var(--accent),var(--accent))", color: "#fff", display: "grid", placeItems: "center", borderRadius: 8 }}>C</div>
+          <span style={{ fontFamily: "var(--font-sans)", fontStyle: "italic", fontSize: 18 }}>choopi</span>
           <span style={{ fontSize: 11, color: "var(--text-faint)", padding: "2px 8px", border: "1px solid var(--border)", borderRadius: 999 }}>Component Showcase</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>

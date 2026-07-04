@@ -7,9 +7,9 @@ import { useNavigate } from "react-router-dom";
 
 // ── Template definitions ──────────────────────────────────────────────────────
 
-type AssetType = "crypto" | "stock" | "etf" | "pension" | "education" | "other";
+type AssetType = "crypto" | "stock" | "etf" | "pension" | "gemel" | "education" | "money_market" | "other";
 
-const MANUAL_TYPES = new Set<AssetType>(["pension", "education", "other"]);
+const MANUAL_TYPES = new Set<AssetType>(["pension", "gemel", "education", "money_market", "other"]);
 
 interface TypeCard {
   id: AssetType;
@@ -41,9 +41,19 @@ const TYPE_CARDS: TypeCard[] = [
     example:  ["My Pension",   "150000",  "NIS",      "2024-01-01"],
   },
   {
-    id: "education", label: "Education", icon: "🎓",
+    id: "gemel", label: "Gemel", icon: "🏛️",
+    headers: ["name",              "balance", "currency", "date"],
+    example:  ["קופת גמל הפניקס", "80000",   "NIS",      "2024-01-01"],
+  },
+  {
+    id: "education", label: "Study fund", icon: "🎓",
     headers: ["name",            "balance", "currency", "date",       "liquid_date"],
     example:  ["Savings Fund",   "30000",   "NIS",      "2024-01-01", "2030-09-01"],
+  },
+  {
+    id: "money_market", label: "Money market", icon: "💵",
+    headers: ["name",              "balance", "currency", "date"],
+    example:  ["קרן כספית שקלית", "50000",   "NIS",      "2024-01-01"],
   },
   {
     id: "other", label: "Other", icon: "💼",
@@ -513,7 +523,9 @@ function FundEditRow({ index, fund, name, type, onNameChange, onTypeChange }: Fu
             style={{ width: 130, flexShrink: 0 }}
           >
             <option value="pension">Pension</option>
-            <option value="education">Education</option>
+            <option value="gemel">Gemel</option>
+            <option value="education">Study fund</option>
+            <option value="money_market">Money market</option>
             <option value="other">Other</option>
           </select>
         </div>

@@ -4,7 +4,7 @@ import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
 import { MobileNav } from "./MobileNav";
 import { CommandPalette } from "./CommandPalette";
-import { StaleDrawer, useStaleCount } from "./StaleDrawer";
+import { StaleDrawer, StaleBanner, useStaleCount } from "./StaleDrawer";
 
 const MOBILE_BP = 768;
 
@@ -100,6 +100,7 @@ export function AppShell({
           <div className="cf-main flex flex-col min-h-0">
             <Topbar greeting={greeting} {...topbarProps} />
             <div className="cf-content flex-1 overflow-y-auto">
+              <StaleBanner onReview={() => setDrawerOpen(true)} />
               {children}
             </div>
           </div>

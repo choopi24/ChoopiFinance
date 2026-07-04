@@ -31,8 +31,8 @@ export function Sidebar({ userName = "You", userEmail, onLogout }: SidebarProps)
           <svg viewBox="0 0 32 32" width="22" height="22">
             <defs>
               <linearGradient id="cf-grad-sidebar" x1="0" y1="0" x2="1" y2="1">
-                <stop offset="0%" stopColor="var(--grad-from)" />
-                <stop offset="100%" stopColor="var(--grad-to)" />
+                <stop offset="0%" stopColor="var(--accent)" />
+                <stop offset="100%" stopColor="var(--accent)" />
               </linearGradient>
             </defs>
             <rect x="2" y="2" width="28" height="28" rx="8" fill="url(#cf-grad-sidebar)" />

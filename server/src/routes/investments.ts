@@ -4,6 +4,7 @@ import { requireAuth } from "../middleware/requireAuth.js";
 import { ok, fail } from "../middleware/respond.js";
 import { enrichInvestment, getUsdNisRate } from "../services/portfolio.js";
 import { recomputeRealized } from "../services/fifo.js";
+import { toNis } from "../services/fx.js";
 import {
   validateExpectedAnnualReturn,
   validateMonthlyContribution,
@@ -14,7 +15,7 @@ export const investmentsRouter = Router();
 investmentsRouter.use(requireAuth);
 
 const MARKET_TYPES = new Set(["crypto", "stock", "etf"]);
-const MANUAL_TYPES = new Set(["pension", "education", "other"]);
+const MANUAL_TYPES = new Set(["pension", "gemel", "education", "money_market", "other"]);
 const VALID_TYPES   = new Set([...MARKET_TYPES, ...MANUAL_TYPES]);
 
 // ── Shared SELECT for enrichment ─────────────────────────────────────────────
@@ -22,7 +23,8 @@ const VALID_TYPES   = new Set([...MARKET_TYPES, ...MANUAL_TYPES]);
 const INV_SELECT = `
   SELECT id, user_id, type, name, ticker, isin, broker, etf_kind,
          liquid_date, closed_at, deleted_at, monthly_deposit, deposit_currency,
-         expected_annual_return, monthly_contribution, created_at
+         expected_annual_return, monthly_contribution,
+         fund_id, fund_track, fee_deposit_pct, fee_balance_pct, created_at
   FROM investments
 `;
 
@@ -64,6 +66,7 @@ investmentsRouter.post("/", (req, res) => {
       type, name, ticker, isin, broker, etf_kind, liquid_date,
       initial_balance, currency = "NIS", occurred_at,
       monthly_deposit, deposit_currency = "NIS",
+      fund_id, fund_track, fee_deposit_pct, fee_balance_pct,
       holding,
     } = req.body as Record<string, unknown>;
 
@@ -77,18 +80,26 @@ investmentsRouter.post("/", (req, res) => {
     // FIX 1: normalise ticker to UPPERCASE on insert
     const tickerNorm = normaliseTicker(ticker);
 
+    const numOrNull = (v: unknown) =>
+      v != null && v !== "" && !isNaN(Number(v)) ? Number(v) : null;
+
     const result = db.prepare(
       `INSERT INTO investments
          (user_id, type, name, ticker, isin, broker, etf_kind, liquid_date,
-          monthly_deposit, deposit_currency)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          monthly_deposit, deposit_currency,
+          fund_id, fund_track, fee_deposit_pct, fee_balance_pct)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       req.user!.id, type, (name as string).trim(),
       tickerNorm,
       isin ?? null, broker ?? null,
       etf_kind ?? null, liquid_date ?? null,
-      monthly_deposit != null ? Number(monthly_deposit) : null,
-      deposit_currency ?? "NIS"
+      numOrNull(monthly_deposit),
+      deposit_currency ?? "NIS",
+      numOrNull(fund_id),
+      (typeof fund_track === "string" && fund_track.trim()) ? fund_track.trim() : null,
+      numOrNull(fee_deposit_pct),
+      numOrNull(fee_balance_pct)
     );
 
     const investmentId = result.lastInsertRowid as number;
@@ -152,7 +163,8 @@ investmentsRouter.patch("/:id", (req, res) => {
 
     const allowed = ["name", "ticker", "isin", "broker", "etf_kind", "liquid_date",
                      "monthly_deposit", "deposit_currency",
-                     "expected_annual_return", "monthly_contribution"];
+                     "expected_annual_return", "monthly_contribution",
+                     "fund_id", "fund_track", "fee_deposit_pct", "fee_balance_pct"];
     const updates: string[] = [];
     const values: unknown[] = [];
 
@@ -162,8 +174,9 @@ investmentsRouter.patch("/:id", (req, res) => {
         // FIX 1: normalise ticker to UPPERCASE on patch
         updates.push("ticker = ?");
         values.push(normaliseTicker(req.body[key]));
-      } else if (key === "monthly_deposit") {
-        updates.push("monthly_deposit = ?");
+      } else if (key === "monthly_deposit" || key === "fund_id" ||
+                 key === "fee_deposit_pct" || key === "fee_balance_pct") {
+        updates.push(`${key} = ?`);
         const v = req.body[key];
         values.push(v != null && v !== "" ? Number(v) : null);
       } else if (key === "expected_annual_return") {
@@ -250,6 +263,78 @@ investmentsRouter.get("/:id/tx-count", (req, res) => {
   }
 });
 
+// GET /api/investments/:id/history — value-over-time series (NIS) reconstructed from transactions.
+//   Market types: mark-to-market at each BUY/SELL using that tx's price, plus today's live value.
+//   Manual types: each UPDATE snapshot is a real balance reading over time.
+investmentsRouter.get("/:id/history", (req, res) => {
+  try {
+    const db = getDb();
+    const id = Number(req.params.id);
+
+    const inv = db.prepare(
+      "SELECT * FROM investments WHERE id = ? AND user_id = ? AND deleted_at IS NULL"
+    ).get(id, req.user!.id) as any;
+    if (!inv) return fail(res, "Investment not found", 404);
+
+    const fx = getUsdNisRate(db, req.user!.id);
+    const points: { t: string; value_nis: number }[] = [];
+
+    if (MARKET_TYPES.has(inv.type)) {
+      const txs = db.prepare(
+        `SELECT kind, units, price_per_unit, total_amount, currency, occurred_at
+         FROM transactions
+         WHERE investment_id = ? AND kind IN ('BUY','SELL')
+         ORDER BY occurred_at ASC, id ASC`
+      ).all(id) as Array<{
+        kind: string; units: number | null; price_per_unit: number | null;
+        total_amount: number; currency: string; occurred_at: string;
+      }>;
+
+      let cumUnits = 0;
+      let costOnly = 0; // amount-only BUYs (unpriceable tickers) held at cost
+      for (const tx of txs) {
+        if (tx.kind === "BUY") {
+          if (tx.units != null && tx.price_per_unit != null && tx.units > 0) cumUnits += tx.units;
+          else costOnly += tx.total_amount;
+        } else if (tx.kind === "SELL" && tx.units != null) {
+          cumUnits = Math.max(0, cumUnits - tx.units);
+        }
+        const price = tx.price_per_unit != null
+          ? tx.price_per_unit
+          : (tx.units ? tx.total_amount / tx.units : 0);
+        const valueNative = cumUnits * price + costOnly;
+        points.push({ t: tx.occurred_at, value_nis: toNis(valueNative, tx.currency, fx.rate) });
+      }
+
+      // Append today's live value as the final point.
+      const enriched = enrichInvestment(db, inv, fx);
+      points.push({
+        t: enriched.price_cached_at ?? new Date().toISOString(),
+        value_nis: enriched.current_value_nis,
+      });
+    } else {
+      const updates = db.prepare(
+        `SELECT total_amount, currency, occurred_at
+         FROM transactions
+         WHERE investment_id = ? AND kind = 'UPDATE'
+         ORDER BY occurred_at ASC, id ASC`
+      ).all(id) as Array<{ total_amount: number; currency: string; occurred_at: string }>;
+      for (const u of updates) {
+        points.push({ t: u.occurred_at, value_nis: toNis(u.total_amount, u.currency, fx.rate) });
+      }
+    }
+
+    // Collapse to one point per calendar day (keep the last reading of each day), ascending.
+    const byDay = new Map<string, { t: string; value_nis: number }>();
+    for (const p of points) byDay.set(p.t.slice(0, 10), p);
+    const series = [...byDay.values()].sort((a, b) => a.t.localeCompare(b.t));
+
+    ok(res, { id, type: inv.type, points: series });
+  } catch (e) {
+    fail(res, (e as Error).message, 500);
+  }
+});
+
 // POST /api/investments/:id/update-balance — quick UPDATE snapshot for pension/education/other
 investmentsRouter.post("/:id/update-balance", (req, res) => {
   try {
@@ -262,7 +347,7 @@ investmentsRouter.post("/:id/update-balance", (req, res) => {
     if (!inv) return fail(res, "Investment not found", 404);
 
     if (!MANUAL_TYPES.has(inv.type)) {
-      return fail(res, "update-balance is only for pension / education / other");
+      return fail(res, "update-balance is only for manual fund types");
     }
 
     const { balance, currency = "NIS", occurred_at, notes } = req.body as Record<string,unknown>;
@@ -284,6 +369,72 @@ investmentsRouter.post("/:id/update-balance", (req, res) => {
   }
 });
 
+// POST /api/investments/:id/contribute — add a cash contribution to an education/other fund.
+// Atomically records a DEPOSIT (raises net-deposited) AND an UPDATE balance snapshot bumped
+// by the same amount, so the contribution itself never shows up as profit:
+//   P/L = current_value − net_deposited, and both rise by `amount` → P/L unchanged.
+investmentsRouter.post("/:id/contribute", (req, res) => {
+  try {
+    const db = getDb();
+    const id = Number(req.params.id);
+
+    const inv = db.prepare(
+      "SELECT * FROM investments WHERE id = ? AND user_id = ? AND deleted_at IS NULL"
+    ).get(id, req.user!.id) as any;
+    if (!inv) return fail(res, "Investment not found", 404);
+
+    if (inv.type === "pension" || !MANUAL_TYPES.has(inv.type)) {
+      return fail(
+        res,
+        inv.type === "pension"
+          ? "Pension funds track contributions via the monthly deposit setting, not one-off contributions."
+          : "Contributions apply to manual funds. For crypto / stocks / ETFs, record a Buy."
+      );
+    }
+
+    const { amount, currency, occurred_at, notes } = req.body as Record<string, unknown>;
+    const amt = Number(amount);
+    if (isNaN(amt) || amt <= 0) return fail(res, "amount must be a positive number");
+
+    // The fund's working currency + last recorded balance come from the latest UPDATE snapshot.
+    const lastUpdate = db.prepare(
+      `SELECT total_amount, currency, occurred_at FROM transactions
+       WHERE investment_id = ? AND kind = 'UPDATE'
+       ORDER BY occurred_at DESC, id DESC LIMIT 1`
+    ).get(id) as { total_amount: number; currency: string; occurred_at: string } | undefined;
+
+    // Keep everything in one currency (no FX mixing): reuse the fund's currency when it exists.
+    const ccy = lastUpdate?.currency ?? (typeof currency === "string" ? currency : "NIS");
+    const prevBalance = lastUpdate?.total_amount ?? 0;
+    const nowIso = new Date().toISOString();
+    // DEPOSIT keeps the user-chosen date (record of when the money went in).
+    const when = (typeof occurred_at === "string" && occurred_at) ? occurred_at : nowIso;
+    const note = (typeof notes === "string" && notes.trim()) ? notes.trim() : null;
+
+    // The balance-after-contribution UPDATE must be the latest snapshot so it becomes the
+    // current value. ISO timestamps sort chronologically, so take the max of (deposit date,
+    // now, last snapshot) — guarding against a back-dated contribution leaving value stale.
+    const updateWhen = [when, nowIso, lastUpdate?.occurred_at]
+      .filter(Boolean).sort().at(-1) as string;
+
+    const run = db.transaction(() => {
+      db.prepare(
+        `INSERT INTO transactions (investment_id, user_id, kind, total_amount, currency, occurred_at, notes)
+         VALUES (?, ?, 'DEPOSIT', ?, ?, ?, ?)`
+      ).run(id, req.user!.id, amt, ccy, when, note ?? "Contribution");
+      db.prepare(
+        `INSERT INTO transactions (investment_id, user_id, kind, total_amount, currency, occurred_at, notes)
+         VALUES (?, ?, 'UPDATE', ?, ?, ?, ?)`
+      ).run(id, req.user!.id, prevBalance + amt, ccy, updateWhen, "Balance after contribution");
+    });
+    run();
+
+    ok(res, { id, amount: amt, currency: ccy, new_balance: prevBalance + amt }, 201);
+  } catch (e) {
+    fail(res, (e as Error).message, 500);
+  }
+});
+
 // POST /api/investments/:id/log-deposit — record a cash deposit for education/other P/L tracking
 investmentsRouter.post("/:id/log-deposit", (req, res) => {
   try {
@@ -299,7 +450,7 @@ investmentsRouter.post("/:id/log-deposit", (req, res) => {
       return fail(res, "Pension funds use monthly_deposit for contribution tracking, not DEPOSIT transactions");
     }
     if (!MANUAL_TYPES.has(inv.type)) {
-      return fail(res, "log-deposit is only for education / other investments");
+      return fail(res, "log-deposit is only for manual fund types");
     }
 
     const { amount, currency = "NIS", occurred_at, notes } = req.body as Record<string,unknown>;

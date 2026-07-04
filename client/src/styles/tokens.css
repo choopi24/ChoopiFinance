@@ -2,9 +2,8 @@
 
 :root {
   /* Typography */
-  --font-sans: "IBM Plex Sans Variable", "IBM Plex Sans", system-ui, -apple-system, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
-  --font-serif: "IBM Plex Serif", Georgia, serif;
+  --font-sans: "Hanken Grotesk Variable", "Hanken Grotesk", system-ui, -apple-system, sans-serif;
+  --font-mono: "Spline Sans Mono Variable", "Spline Sans Mono", ui-monospace, monospace;
 
   /* Type scale */
   --text-xs: 11px;
@@ -37,57 +36,89 @@
   --r-xl: 20px;
   --r-pill: 999px;
 
-  /* Brand accents (shared) */
-  --emerald: #0F9D6E;
-  --emerald-soft: rgba(15, 157, 110, 0.12);
-  --rose: #E5484D;
-  --rose-soft: rgba(229, 72, 77, 0.12);
+  /* Accent — single electric blue, shared across themes (no gradient).
+     --accent-soft / --accent-ink derive per-theme via color-mix. */
+  --accent: #2F6BED;
+}
 
-  --grad-from: #7C3AED;
-  --grad-mid:  #C026D3;
-  --grad-to:   #F472B6;
+/* Light theme — cool slate */
+[data-theme="light"] {
+  --bg:        #F5F7FA;
+  --bg-alt:    #EEF1F6;
+  --surface:   #FFFFFF;
+  --surface-2: #F2F5F9;
+  --border:    #E3E8EF;
+  --border-strong: #CFD7E2;
+  --text:      #0F172A;
+  --text-soft: #5A6576;
+  --text-faint:#93A0B2;
+
+  /* Accent derivations */
+  --accent-ink:  var(--accent);
+  --accent-soft: color-mix(in oklab, var(--accent) 10%, var(--surface));
+
+  /* Semantic + generated soft tints (re-tint per theme) */
+  --emerald: #0E9E6E;
+  --rose:    #E0484D;
+  --amber:   #C9820A;
+  --emerald-soft: color-mix(in oklab, var(--emerald) 12%, var(--surface));
+  --rose-soft:    color-mix(in oklab, var(--rose) 11%, var(--surface));
+  --amber-soft:   color-mix(in oklab, var(--amber) 12%, var(--surface));
 
   /* Chart palette (asset types) */
-  --c-crypto: #7C3AED;
-  --c-stocks: #0EA5E9;
-  --c-etf:    #14B8A6;
-  --c-pension:#F59E0B;
-  --c-edu:    #EC4899;
-  --c-other:  #94A3B8;
+  --c-crypto: #6E59E0;
+  --c-stocks: #1F92CC;
+  --c-etf:    #109A86;
+  --c-pension:#CE8409;
+  --c-gemel:  #B0592E;
+  --c-edu:    #D65B9A;
+  --c-mm:     #5B7FBF;
+  --c-other:  #7E8A9C;
+
+  --shadow-sm: 0 1px 2px rgba(15,23,42,0.05);
+  --shadow-md: 0 4px 16px rgba(15,23,42,0.07);
+  --shadow-lg: 0 12px 40px rgba(15,23,42,0.10);
+  --skeleton:  linear-gradient(90deg, #E9EDF3 0%, #F4F7FB 50%, #E9EDF3 100%);
 }
 
-/* Light theme */
-[data-theme="light"] {
-  --bg:        #F7F5F0;
-  --bg-alt:    #EFECE4;
-  --surface:   #FFFFFF;
-  --surface-2: #FAF8F3;
-  --border:    #E7E3D9;
-  --border-strong: #D5D0C2;
-  --text:      #18181B;
-  --text-soft: #5B5A56;
-  --text-faint:#9A9892;
-  --shadow-sm: 0 1px 2px rgba(24,24,27,0.04);
-  --shadow-md: 0 4px 16px rgba(24,24,27,0.06);
-  --shadow-lg: 0 12px 40px rgba(24,24,27,0.08);
-  --skeleton:  linear-gradient(90deg, #ECE9E1 0%, #F4F2EC 50%, #ECE9E1 100%);
-}
-
-/* Dark theme */
+/* Dark theme — deep navy */
 [data-theme="dark"] {
-  --bg:        #0B0B0F;
-  --bg-alt:    #08080B;
-  --surface:   #15161B;
-  --surface-2: #1B1C22;
-  --border:    #26272E;
-  --border-strong: #34353D;
-  --text:      #F4F4F5;
-  --text-soft: #A1A1AA;
-  --text-faint:#6B6C74;
+  --bg:        #0B1120;
+  --bg-alt:    #070C18;
+  --surface:   #121A2B;
+  --surface-2: #1A2336;
+  --border:    #262F46;
+  --border-strong: #374159;
+  --text:      #EAEEF6;
+  --text-soft: #9AA7BD;
+  --text-faint:#6B7689;
+
+  /* Accent derivations */
+  --accent-ink:  color-mix(in oklab, var(--accent) 72%, white);
+  --accent-soft: color-mix(in oklab, var(--accent) 22%, var(--surface));
+
+  /* Semantic + generated soft tints (re-tint per theme) */
+  --emerald: #2DD495;
+  --rose:    #FF6B6B;
+  --amber:   #F5B13C;
+  --emerald-soft: color-mix(in oklab, var(--emerald) 16%, var(--surface));
+  --rose-soft:    color-mix(in oklab, var(--rose) 16%, var(--surface));
+  --amber-soft:   color-mix(in oklab, var(--amber) 16%, var(--surface));
+
+  /* Chart palette (asset types) */
+  --c-crypto: #8E7BF7;
+  --c-stocks: #3FC0E0;
+  --c-etf:    #2DD4A7;
+  --c-pension:#F5B13C;
+  --c-gemel:  #E8935F;
+  --c-edu:    #F178B6;
+  --c-mm:     #7FA3E8;
+  --c-other:  #93A0B6;
+
   --shadow-sm: 0 1px 2px rgba(0,0,0,0.4);
   --shadow-md: 0 4px 16px rgba(0,0,0,0.35);
   --shadow-lg: 0 12px 40px rgba(0,0,0,0.5);
-  --skeleton:  linear-gradient(90deg, #1A1B21 0%, #22232A 50%, #1A1B21 100%);
+  --skeleton:  linear-gradient(90deg, #141D30 0%, #1E2840 50%, #141D30 100%);
 }
 
 /* Skeleton shimmer */
@@ -110,7 +141,7 @@
 
 /* Focus ring */
 *:focus-visible {
-  outline: 2px solid var(--grad-mid);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
   border-radius: 4px;
 }

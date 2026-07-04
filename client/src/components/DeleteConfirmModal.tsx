@@ -26,7 +26,7 @@ export function DeleteConfirmModal({ investmentId, onClose, onDeleted }: DeleteC
   }
 
   return (
-    <Modal open={investmentId !== null} onClose={onClose} title="" width={400}>
+    <Modal open={investmentId !== null} onClose={onClose} title="" width={440} className="is-danger">
       <div className="cf-delete-modal">
         <div className="cf-delete-icon">
           <AlertTriangle size={22} strokeWidth={1.6} />

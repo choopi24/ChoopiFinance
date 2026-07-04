@@ -101,12 +101,12 @@ export function useCsvImport() {
   });
 }
 
-// ── Wide-matrix import (pension / education / other) ──────────────────────────
+// ── Wide-matrix import (manual fund types) ────────────────────────────────────
 
 export interface FundPreview {
   originalName: string;
   suggestedName: string;
-  detectedType: "pension" | "education" | "other";
+  detectedType: "pension" | "gemel" | "education" | "money_market" | "other";
   snapshotCount: number;
   earliestDate: string | null;
   latestDate: string | null;

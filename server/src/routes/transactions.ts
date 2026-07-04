@@ -62,7 +62,7 @@ transactionsRouter.post("/", async (req, res) => {
     const db = getDb();
     const {
       investment_id, kind, units, price_per_unit, total_amount,
-      currency = "NIS", wallet_id, occurred_at, notes,
+      currency = "NIS", occurred_at, notes,
       fx_rate_at_buy, force_separate = false,
     } = req.body as Record<string, unknown>;
 
@@ -152,12 +152,12 @@ transactionsRouter.post("/", async (req, res) => {
     const result = db.prepare(
       `INSERT INTO transactions
          (investment_id, user_id, kind, units, price_per_unit, total_amount,
-          currency, wallet_id, occurred_at, notes, fx_rate_at_buy)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          currency, occurred_at, notes, fx_rate_at_buy)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       investment_id, req.user!.id, kind,
       u ?? null, pUnit ?? null, effectiveTotal,
-      txCurrency, wallet_id ?? null, occurred_at, notes ?? null,
+      txCurrency, occurred_at, notes ?? null,
       kind === "BUY" ? (fx_rate_at_buy ?? null) : null
     );
 
@@ -274,7 +274,7 @@ transactionsRouter.patch("/:id", (req, res) => {
     if (!tx) return fail(res, "Transaction not found", 404);
 
     const allowed = ["units", "price_per_unit", "total_amount", "currency",
-                     "wallet_id", "occurred_at", "notes", "fx_rate_at_buy"];
+                     "occurred_at", "notes", "fx_rate_at_buy"];
     const updates: string[] = [];
     const values: unknown[] = [];
 

@@ -22,6 +22,11 @@ export interface Investment {
   // Future-value projection inputs
   expected_annual_return: number | null;
   monthly_contribution: number | null;
+  // Israeli fund linkage + fees
+  fund_id: number | null;
+  fund_track: string | null;
+  fee_deposit_pct: number | null;
+  fee_balance_pct: number | null;
   // Position (from enrichment)
   remaining_units: number;
   cost_basis_nis: number;
@@ -40,6 +45,9 @@ export interface Investment {
   stale_days: number | null;
   stale_level: "stale-30" | "stale-60" | null;
   update_count: number;
+  // Israeli fund estimate (regulator-published yields)
+  value_estimated: boolean;
+  last_reported_balance_nis: number | null;
   fx_rate_used: number;
   fx_source: string;
 }
@@ -89,6 +97,32 @@ export function useSymbolSearch(query: string, type: string, enabled: boolean) {
   });
 }
 
+export interface IlFundHit {
+  fund_id: number;
+  name: string;
+  classification: string | null;
+  managing_corporation: string | null;
+  latest_period: number;
+  monthly_yield: number | null;
+  year_to_date_yield: number | null;
+  avg_annual_yield_5yrs: number | null;
+  avg_annual_mgmt_fee: number | null;
+  avg_deposit_fee: number | null;
+}
+
+/** Typeahead over the regulator's Gemel-Net / Pensia-Net datasets (Hebrew names). */
+export function useIlFundSearch(query: string, type: string, enabled: boolean) {
+  return useQuery<IlFundHit[]>({
+    queryKey: ["il-funds", "search", type, query],
+    queryFn: () =>
+      api.get<ApiOk<IlFundHit[]>>(
+        `/il-funds/search?q=${encodeURIComponent(query)}&type=${type}`
+      ).then(r => r.data),
+    enabled: enabled && query.trim().length >= 2,
+    staleTime: 10 * 60_000,
+  });
+}
+
 export function useCheckExisting(ticker: string, type: string, enabled: boolean) {
   return useQuery<ExistingCheck | null>({
     queryKey: ["investments", "check-existing", ticker, type],
@@ -98,6 +132,30 @@ export function useCheckExisting(ticker: string, type: string, enabled: boolean)
       ).then(r => r.data),
     enabled: enabled && ticker.length >= 1,
     staleTime: 30_000,
+  });
+}
+
+export interface InvestmentHistoryPoint {
+  t: string;          // ISO timestamp of the reading
+  value_nis: number;  // value at that point, NIS-denominated
+}
+
+export interface InvestmentHistory {
+  id: number;
+  type: AssetType;
+  points: InvestmentHistoryPoint[];
+}
+
+/** Value-over-time series for a single investment (lazy — only fetches when enabled). */
+export function useInvestmentHistory(investmentId: number | null, enabled: boolean) {
+  return useQuery<InvestmentHistory>({
+    queryKey: ["investments", investmentId, "history"],
+    queryFn: () =>
+      api.get<ApiOk<InvestmentHistory>>(
+        `/investments/${investmentId}/history`
+      ).then(r => r.data),
+    enabled: enabled && investmentId !== null,
+    staleTime: 60_000,
   });
 }
 
@@ -129,6 +187,10 @@ export interface CreateInvestmentBody {
   deposit_currency?: string;
   expected_annual_return?: number | null;
   monthly_contribution?: number | null;
+  fund_id?: number | null;
+  fund_track?: string | null;
+  fee_deposit_pct?: number | null;
+  fee_balance_pct?: number | null;
   /** When present for market types, creates a synthetic BUY in the same server request. */
   holding?: {
     units: number;
@@ -145,7 +207,6 @@ export interface AddTransactionBody {
   price_per_unit?: number;
   total_amount?: number;
   currency: string;
-  wallet_id?: number | null;
   occurred_at: string;
   notes?: string;
   fx_rate_at_buy?: number;
@@ -170,6 +231,7 @@ export function useCreateInvestment() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["investments"] });
       qc.invalidateQueries({ queryKey: ["portfolio"] });
+      qc.invalidateQueries({ queryKey: ["realized"] });
     },
   });
 }
@@ -183,6 +245,7 @@ export function useAddTransaction() {
       qc.invalidateQueries({ queryKey: ["investments"] });
       qc.invalidateQueries({ queryKey: ["portfolio"] });
       qc.invalidateQueries({ queryKey: ["transactions"] });
+      qc.invalidateQueries({ queryKey: ["realized"] });
     },
   });
 }
@@ -195,6 +258,7 @@ export function useEditInvestment() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["investments"] });
       qc.invalidateQueries({ queryKey: ["portfolio"] });
+      qc.invalidateQueries({ queryKey: ["realized"] });
     },
   });
 }
@@ -206,6 +270,7 @@ export function useDeleteInvestment() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["investments"] });
       qc.invalidateQueries({ queryKey: ["portfolio"] });
+      qc.invalidateQueries({ queryKey: ["realized"] });
     },
   });
 }
@@ -223,6 +288,32 @@ export function useBulkTransactions() {
       qc.invalidateQueries({ queryKey: ["investments"] });
       qc.invalidateQueries({ queryKey: ["portfolio"] });
       qc.invalidateQueries({ queryKey: ["transactions"] });
+      qc.invalidateQueries({ queryKey: ["realized"] });
+    },
+  });
+}
+
+/**
+ * Add a cash contribution to an education/other fund. Atomically raises both the
+ * recorded balance and net-deposited by `amount`, so the contribution never shows
+ * up as profit (P/L = value − deposited stays unchanged).
+ */
+export function useContribute() {
+  const qc = useQueryClient();
+  return useMutation<
+    { id: number; amount: number; currency: string; new_balance: number },
+    Error,
+    { id: number; amount: number; currency: string; occurred_at: string; notes?: string }
+  >({
+    mutationFn: ({ id, ...body }) =>
+      api.post<ApiOk<{ id: number; amount: number; currency: string; new_balance: number }>>(
+        `/investments/${id}/contribute`, body
+      ).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["investments"] });
+      qc.invalidateQueries({ queryKey: ["portfolio"] });
+      qc.invalidateQueries({ queryKey: ["transactions"] });
+      qc.invalidateQueries({ queryKey: ["realized"] });
     },
   });
 }
@@ -239,6 +330,7 @@ export function useUpdateBalance() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["investments"] });
       qc.invalidateQueries({ queryKey: ["portfolio"] });
+      qc.invalidateQueries({ queryKey: ["realized"] });
     },
   });
 }

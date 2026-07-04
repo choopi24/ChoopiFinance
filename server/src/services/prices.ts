@@ -14,6 +14,7 @@ import YahooFinanceClass from "yahoo-finance2";
 const yahooFinance = new (YahooFinanceClass as any)();
 import type Database from "better-sqlite3";
 import { getRate } from "./fx.js";
+import { datasetForType, refreshFundCache } from "./israelFunds.js";
 
 // ── TTLs ──────────────────────────────────────────────────────────────────────
 
@@ -200,21 +201,25 @@ export async function batchRefreshAll(
   getRate(db, userId).catch(() => { /* best-effort */ });
 
   const investments = db
-    .prepare<[number], { id: number; type: string; ticker: string | null }>(
-      `SELECT id, type, ticker FROM investments
-       WHERE user_id = ? AND deleted_at IS NULL AND closed_at IS NULL AND ticker IS NOT NULL`
+    .prepare<[number], { id: number; type: string; ticker: string | null; fund_id: number | null }>(
+      `SELECT id, type, ticker, fund_id FROM investments
+       WHERE user_id = ? AND deleted_at IS NULL AND closed_at IS NULL
+         AND (ticker IS NOT NULL OR fund_id IS NOT NULL)`
     )
     .all(userId);
 
   const cryptoTickers: string[] = [];
   const stockEtfRows: { ticker: string; type: "stock" | "etf" }[] = [];
+  const ilFunds = new Map<string, { dataset: "gemel" | "pensia"; fundId: number }>();
 
   for (const inv of investments) {
-    if (!inv.ticker) continue;
-    if (inv.type === "crypto") {
+    if (inv.type === "crypto" && inv.ticker) {
       cryptoTickers.push(inv.ticker);
-    } else if (inv.type === "stock" || inv.type === "etf") {
+    } else if ((inv.type === "stock" || inv.type === "etf") && inv.ticker) {
       stockEtfRows.push({ ticker: inv.ticker, type: inv.type });
+    } else if (inv.fund_id != null) {
+      const dataset = datasetForType(inv.type);
+      if (dataset) ilFunds.set(`${dataset}:${inv.fund_id}`, { dataset, fundId: inv.fund_id });
     }
   }
 
@@ -222,9 +227,15 @@ export async function batchRefreshAll(
   await refreshCryptoBatch(db, cryptoTickers);
 
   // Stocks/ETFs: parallel (Yahoo is resilient to this)
-  await Promise.allSettled(
-    stockEtfRows.map(r => refreshStockSingle(db, r.ticker, r.type))
-  );
+  // Israeli funds: monthly regulator data, 24h-TTL'd inside refreshFundCache
+  await Promise.allSettled([
+    ...stockEtfRows.map(r => refreshStockSingle(db, r.ticker, r.type)),
+    ...[...ilFunds.values()].map(f =>
+      refreshFundCache(db, f.dataset, f.fundId).catch(err =>
+        console.warn(`IL fund ${f.dataset}/${f.fundId} refresh failed:`, (err as Error).message)
+      )
+    ),
+  ]);
 
   const last_sync = new Date().toISOString();
   return { last_sync, count: investments.length };

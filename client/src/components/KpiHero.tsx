@@ -66,7 +66,7 @@ export function KpiHero({
         {/* Left: main number + chart */}
         <div className="cf-kpi-hero-main">
           <div className="cf-kpi-label">Total portfolio value</div>
-          <div className="cf-hero-number serif tnum">
+          <div className="cf-hero-number tnum">
             <span className="cf-hero-sym">{sym}</span>
             {totalValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}
           </div>

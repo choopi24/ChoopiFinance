@@ -1,3 +1,4 @@
+import { lazy, Suspense, useState } from "react";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../hooks/useTheme";
 import { useCurrency } from "../hooks/useCurrency";
@@ -12,16 +13,13 @@ import { AllocationCard } from "../components/AllocationCard";
 import { ActivityList } from "../components/ActivityList";
 import { WelcomeState } from "../components/WelcomeState";
 import { SkeletonShimmer } from "../components/SkeletonShimmer";
-import type { Currency } from "@choopi/shared";
+import { ASSET_TYPE_LABELS, type AssetType, type Currency } from "@choopi/shared";
+import { TYPE_COLOR_VAR } from "../components/AssetIcon";
 
-const TYPE_COLORS: Record<string, string> = {
-  crypto:    "var(--c-crypto, #7C3AED)",
-  stock:     "var(--c-stocks, #0EA5E9)",
-  etf:       "var(--c-etf, #14B8A6)",
-  pension:   "var(--c-pension, #F59E0B)",
-  education: "var(--c-edu, #EC4899)",
-  other:     "var(--c-other, #94A3B8)",
-};
+// Same lazy chunk as the Investments page — loaded only when the modal opens.
+const InvestmentModal = lazy(() =>
+  import("../components/InvestmentModal").then(m => ({ default: m.InvestmentModal }))
+);
 const CCY_COLORS: Record<string, string> = {
   NIS: "#7C3AED",
   USD: "#F472B6",
@@ -35,6 +33,7 @@ export default function Dashboard() {
   const { data: fx } = useFxRate();
   const { data: portfolio, isLoading: portfolioLoading } = usePortfolio();
   const { data: recentTxs = [] } = useRecentTransactions(5);
+  const [addOpen, setAddOpen] = useState(false);
 
   const fxRate = fx?.rate ?? portfolio?.fx_rate_used ?? FALLBACK_FX_USD_NIS;
 
@@ -57,9 +56,9 @@ export default function Dashboard() {
 
   // ── Allocation slices ─────────────────────────────────────────────────────
   const allocByType = (portfolio?.allocation_by_type ?? []).map(s => ({
-    label: s.label.charAt(0).toUpperCase() + s.label.slice(1),
+    label: ASSET_TYPE_LABELS[s.label as AssetType] ?? s.label,
     value: toDisplayCurrency(s.value_nis, currency as Currency, fxRate),
-    color: TYPE_COLORS[s.label] ?? "#94A3B8",
+    color: TYPE_COLOR_VAR[s.label as AssetType] ?? "#94A3B8",
   }));
 
   const allocByCurrency = (portfolio?.allocation_by_currency ?? []).map(s => ({
@@ -89,6 +88,7 @@ export default function Dashboard() {
       userName={user?.username ?? "You"}
       onLogout={logout}
       greeting={greeting}
+      onAdd={() => setAddOpen(true)}
       onRefresh={refresh}
       isRefreshing={isRefreshing}
       lastSync={lastSync}
@@ -107,7 +107,7 @@ export default function Dashboard() {
 
       {/* First-run welcome */}
       {isFirstRun && (
-        <WelcomeState userName={user?.username} />
+        <WelcomeState userName={user?.username} onAdd={() => setAddOpen(true)} />
       )}
 
       {/* Populated dashboard */}
@@ -145,6 +145,12 @@ export default function Dashboard() {
             onViewAll={() => { window.location.href = "/transactions"; }}
           />
         </>
+      )}
+
+      {addOpen && (
+        <Suspense fallback={null}>
+          <InvestmentModal mode="add" onClose={() => setAddOpen(false)} />
+        </Suspense>
       )}
     </AppShell>
   );

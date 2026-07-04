@@ -20,10 +20,15 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 -- ── Investments ───────────────────────────────────────────────────────────────
+-- Israeli regulated funds: type pension (קרן פנסיה), gemel (קופת גמל),
+-- education (קרן השתלמות), money_market (קרן כספית). fund_id/fund_track link
+-- to the regulator's Gemel-Net/Pensia-Net datasets; fee_deposit_pct and
+-- fee_balance_pct are the personal management fees (% on deposits / % per
+-- year on balance).
 CREATE TABLE IF NOT EXISTS investments (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  type             TEXT    NOT NULL CHECK(type IN ('crypto','stock','etf','pension','education','other')),
+  type             TEXT    NOT NULL CHECK(type IN ('crypto','stock','etf','pension','gemel','education','money_market','other')),
   name             TEXT    NOT NULL,
   ticker           TEXT,
   isin             TEXT,
@@ -32,27 +37,25 @@ CREATE TABLE IF NOT EXISTS investments (
   liquid_date      TEXT,
   closed_at        TEXT,
   deleted_at       TEXT,
-  -- Pension deposit model
+  -- Contribution model for manual funds
   monthly_deposit  REAL,
   deposit_currency TEXT    NOT NULL DEFAULT 'NIS',
   -- Future-value projection inputs
   expected_annual_return REAL,
   monthly_contribution   REAL,
+  -- Israeli fund linkage + fees
+  fund_id          INTEGER,
+  fund_track       TEXT,
+  fee_deposit_pct  REAL,
+  fee_balance_pct  REAL,
   created_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_investments_user_type ON investments(user_id, type);
 
--- ── Crypto wallets ────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS crypto_wallets (
-  id      INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  name    TEXT    NOT NULL
-);
-
 -- ── Transactions ──────────────────────────────────────────────────────────────
--- kind=UPDATE : Pension/Education/Other balance snapshot (total_amount = current balance, not a delta).
--- kind=DEPOSIT: Actual cash contribution to Education/Other funds (for net-deposited P/L model).
+-- kind=UPDATE : Manual-fund balance snapshot (total_amount = current balance, not a delta).
+-- kind=DEPOSIT: Actual cash contribution to a manual fund (for net-deposited P/L model).
 -- kind=BUY/SELL/DIV: Market transactions for Crypto/Stock/ETF.
 CREATE TABLE IF NOT EXISTS transactions (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,7 +66,6 @@ CREATE TABLE IF NOT EXISTS transactions (
   price_per_unit  REAL,
   total_amount    REAL    NOT NULL,
   currency        TEXT    NOT NULL CHECK(currency IN ('NIS','USD')),
-  wallet_id       INTEGER REFERENCES crypto_wallets(id) ON DELETE SET NULL,
   occurred_at     TEXT    NOT NULL,
   notes           TEXT,
   realized_pl     REAL,
@@ -102,4 +104,20 @@ CREATE TABLE IF NOT EXISTS price_cache (
   price       REAL NOT NULL,
   fetched_at  TEXT NOT NULL,
   PRIMARY KEY (symbol, asset_type)
+);
+
+-- ── Israeli fund cache ────────────────────────────────────────────────────────
+-- Cached monthly rows from data.gov.il (Gemel-Net / Pensia-Net).
+-- period is YYYYMM as published in REPORT_PERIOD. Yields are percent (2.31 = +2.31%).
+CREATE TABLE IF NOT EXISTS il_fund_cache (
+  dataset             TEXT    NOT NULL CHECK(dataset IN ('gemel','pensia')),
+  fund_id             INTEGER NOT NULL,
+  period              INTEGER NOT NULL,
+  fund_name           TEXT,
+  fund_classification TEXT,
+  monthly_yield       REAL,
+  avg_annual_mgmt_fee REAL,
+  avg_deposit_fee     REAL,
+  fetched_at          TEXT    NOT NULL,
+  PRIMARY KEY (dataset, fund_id, period)
 );

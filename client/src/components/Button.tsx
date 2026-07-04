@@ -12,14 +12,14 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   children?: ReactNode;
 }
 
-const BASE = "inline-flex items-center justify-center gap-2 font-medium rounded-md transition-all duration-150 cursor-pointer select-none disabled:opacity-50 disabled:cursor-not-allowed";
+const BASE = "inline-flex items-center justify-center gap-2 font-semibold rounded-md transition-all duration-150 cursor-pointer select-none disabled:opacity-45 disabled:cursor-not-allowed disabled:shadow-none";
 
 const VARIANTS: Record<Variant, string> = {
   default: "bg-surface border border-border text-text hover:border-border-strong hover:bg-surface-2",
-  primary: "bg-text text-bg hover:opacity-90",
+  primary: "cf-btn-grad",
   grad: "cf-btn-grad",
-  danger: "bg-rose/10 border border-rose/30 text-rose hover:bg-rose/20",
-  ghost: "bg-transparent text-text-soft hover:text-text hover:bg-surface",
+  danger: "bg-rose text-white border-0 hover:opacity-90",
+  ghost: "bg-transparent text-accent-ink border border-accent/40 hover:bg-accent-soft",
 };
 
 const SIZES: Record<Size, string> = {
@@ -57,7 +57,7 @@ interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 export function IconButton({ children, active, size = "md", className = "", ...rest }: IconButtonProps) {
-  const dim = size === "sm" ? "w-7 h-7" : "w-[34px] h-[34px]";
+  const dim = size === "sm" ? "w-7 h-7" : "w-8 h-8";
   return (
     <button
       className={[

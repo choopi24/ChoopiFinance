@@ -17,6 +17,7 @@
 import type Database from "better-sqlite3";
 import { computePosition, computeManualPosition } from "./fifo.js";
 import { getRateSync, toNis } from "./fx.js";
+import { datasetForType, estimateFromCache } from "./israelFunds.js";
 
 const MARKET_TYPES = new Set(["crypto", "stock", "etf"]);
 const STALE_30 = 30;
@@ -52,6 +53,10 @@ interface InvRow {
   deposit_currency: string;
   expected_annual_return: number | null;
   monthly_contribution: number | null;
+  fund_id: number | null;
+  fund_track: string | null;
+  fee_deposit_pct: number | null;
+  fee_balance_pct: number | null;
   created_at: string;
 }
 
@@ -73,6 +78,10 @@ export interface EnrichedInvestment {
   deposit_currency: string;
   expected_annual_return: number | null;
   monthly_contribution: number | null;
+  fund_id: number | null;
+  fund_track: string | null;
+  fee_deposit_pct: number | null;
+  fee_balance_pct: number | null;
 
   // Position
   remaining_units: number;
@@ -98,6 +107,12 @@ export interface EnrichedInvestment {
   stale_days: number | null;
   stale_level: "stale-30" | "stale-60" | null;
   update_count: number;
+
+  // Israeli fund estimate (Gemel-Net/Pensia-Net published yields)
+  /** True when current_value_nis was grown forward from the last manual balance. */
+  value_estimated: boolean;
+  /** The last manually-entered balance in NIS (estimate baseline). */
+  last_reported_balance_nis: number | null;
 
   // FX metadata for tooltip
   fx_rate_used: number;
@@ -160,9 +175,30 @@ export function enrichInvestment(
 
     const cost_basis_nis = toNis(pos.cost_basis_remaining, pos.currency, fx.rate);
     const realized_pl_nis = toNis(pos.realized_pl_total, pos.currency, fx.rate);
-    const unrealized_pl_nis = current_value_nis - cost_basis_nis;
+
+    // Only show unrealized P&L once we have a price fetched AFTER the position was
+    // established — otherwise the entry-flow price (≈ the BUY price) produces a
+    // phantom gain/loss that's really just cost basis. We compare against the most
+    // recent BUY's created_at (when it was actually recorded). occurred_at can't be
+    // used: it's stored at midnight, so any same-day price would look "post-entry".
+    // Compare at SECOND granularity: created_at is second-precision (strftime), while
+    // price fetched_at carries milliseconds — so a price cached during the same-second
+    // add flow must NOT count as post-entry.
+    const lastBuy = db
+      .prepare<[number], { last_buy: string | null }>(
+        "SELECT MAX(created_at) AS last_buy FROM transactions WHERE investment_id = ? AND kind = 'BUY'"
+      )
+      .get(inv.id) as { last_buy: string | null } | undefined;
+    const lastBuyAt = lastBuy?.last_buy ?? null;
+    const toSec = (iso: string) => Math.floor(new Date(iso).getTime() / 1000);
+    const pricePostEntry =
+      priceRow != null &&
+      lastBuyAt != null &&
+      toSec(priceRow.fetched_at) > toSec(lastBuyAt);
+
+    const unrealized_pl_nis = pricePostEntry ? current_value_nis - cost_basis_nis : 0;
     const unrealized_pct =
-      cost_basis_nis > 0 ? (unrealized_pl_nis / cost_basis_nis) * 100 : null;
+      pricePostEntry && cost_basis_nis > 0 ? (unrealized_pl_nis / cost_basis_nis) * 100 : null;
 
     return {
       ...inv,
@@ -181,17 +217,36 @@ export function enrichInvestment(
       stale_days: null,
       stale_level: null,
       update_count: 0,
+      value_estimated: false,
+      last_reported_balance_nis: null,
       fx_rate_used: fx.rate,
       fx_source: fx.source,
     };
   } else {
-    // Pension / Education / Other — FIX 3: use real net_deposited, not 0
+    // Manual types (pension / gemel / education / money_market / other)
     const man = computeManualPosition(db, inv.id, {
       type: inv.type,
       monthly_deposit: inv.monthly_deposit,
     });
 
-    const current_value_nis = toNis(man.current_value, man.currency, fx.rate);
+    // Israeli regulated funds: grow the last manual balance forward using the
+    // regulator's published monthly track yields + contributions − fees.
+    let current_value_native = man.current_value;
+    let value_estimated = false;
+    const dataset = datasetForType(inv.type);
+    if (dataset && inv.fund_id != null && man.last_update_at != null) {
+      const est = estimateFromCache(
+        db, dataset, inv.fund_id,
+        man.current_value, man.last_update_at,
+        inv.monthly_deposit, inv.fee_deposit_pct, inv.fee_balance_pct
+      );
+      if (est) {
+        current_value_native = est.value;
+        value_estimated = true;
+      }
+    }
+
+    const current_value_nis = toNis(current_value_native, man.currency, fx.rate);
     // cost_basis = net deposited, converted to NIS
     const cost_basis_nis = toNis(man.net_deposited, man.currency, fx.rate);
     const unrealized_pl_nis = current_value_nis - cost_basis_nis;
@@ -216,6 +271,10 @@ export function enrichInvestment(
       stale_days,
       stale_level,
       update_count: man.update_count,
+      value_estimated,
+      last_reported_balance_nis: value_estimated
+        ? toNis(man.current_value, man.currency, fx.rate)
+        : null,
       fx_rate_used: fx.rate,
       fx_source: fx.source,
     };
@@ -254,7 +313,8 @@ export function computePortfolio(
     .prepare<[number], InvRow>(
       `SELECT id, user_id, type, name, ticker, isin, broker, etf_kind, liquid_date,
               closed_at, deleted_at, monthly_deposit, deposit_currency,
-              expected_annual_return, monthly_contribution, created_at
+              expected_annual_return, monthly_contribution,
+              fund_id, fund_track, fee_deposit_pct, fee_balance_pct, created_at
        FROM investments
        WHERE user_id = ? AND deleted_at IS NULL AND closed_at IS NULL`
     )
@@ -264,7 +324,10 @@ export function computePortfolio(
 
   const total_value_nis = enriched.reduce((s, e) => s + e.current_value_nis, 0);
   const total_net_deposited_nis = enriched.reduce((s, e) => s + e.cost_basis_nis, 0);
-  const unrealized_pl_nis = total_value_nis - total_net_deposited_nis;
+  // Sum the per-investment unrealized P&L (which is gated to post-entry prices)
+  // rather than recomputing total_value − cost — otherwise a freshly-added
+  // position would leak its entry-time phantom gain into the portfolio total.
+  const unrealized_pl_nis = enriched.reduce((s, e) => s + e.unrealized_pl_nis, 0);
   const unrealized_pct =
     total_net_deposited_nis > 0
       ? (unrealized_pl_nis / total_net_deposited_nis) * 100

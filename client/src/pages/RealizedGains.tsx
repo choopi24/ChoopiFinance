@@ -220,7 +220,7 @@ export default function RealizedGainsPage() {
                 <div style={{ marginBottom: 4, fontSize: 12, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
                   Total realized {selectedYear}
                 </div>
-                <div className="cf-hero-number serif" style={{ fontSize: 40, lineHeight: 1 }}>
+                <div className="cf-hero-number" style={{ fontSize: 40, lineHeight: 1 }}>
                   <span className="cf-hero-sym" style={{ fontSize: 24 }}>₪</span>
                   <span style={{ color: total >= 0 ? "var(--emerald)" : "var(--rose)" }}>
                     {total >= 0 ? "+" : ""}{Math.abs(total).toLocaleString("en-US", { maximumFractionDigits: 0 })}

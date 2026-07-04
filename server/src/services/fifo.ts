@@ -41,10 +41,7 @@ export interface RealizationDetail {
 
 export interface ManualPositionResult {
   current_value: number;
-  /** Actual cash deposited:
-   *  - pension  → monthly_deposit × whole months elapsed since first UPDATE
-   *  - education / other → SUM of DEPOSIT transaction amounts
-   */
+  /** Principal baseline for P/L (see computeManualPosition for the model). */
   net_deposited: number;
   unrealized_pl: number;        // current_value − net_deposited
   currency: string;             // currency of the latest UPDATE transaction
@@ -216,16 +213,23 @@ export interface ManualInvMeta {
 }
 
 /**
- * Compute the position for a non-market investment.
+ * Compute the position for a non-market investment (pension / gemel /
+ * education / money_market / other).
  *
- * PENSION model:
- *   net_deposited = monthly_deposit × whole calendar months elapsed
- *                   since the earliest UPDATE transaction.
- *   unrealized_pl = current_value − net_deposited.
- *   If monthly_deposit is null / 0, net_deposited = 0.
+ * Principal (net_deposited) model — one formula for all manual types:
  *
- * EDUCATION / OTHER model:
- *   net_deposited = SUM of all DEPOSIT transaction amounts.
+ *   pre     = SUM of DEPOSIT rows dated on/before the first UPDATE snapshot
+ *             (historical deposits that explain how the opening balance arose)
+ *   post    = SUM of DEPOSIT rows dated after the first UPDATE snapshot
+ *   implied = monthly_deposit × whole calendar months since the first UPDATE
+ *             (funds where contributions aren't logged individually)
+ *
+ *   net_deposited = (pre > 0 ? pre : opening balance) + post + implied
+ *
+ * So: if you logged the deposit history, P/L is lifetime (value − deposits);
+ * otherwise the opening balance is treated as principal and P/L measures
+ * growth since you started tracking — an opening balance is never profit.
+ *
  *   current_value = latest UPDATE total_amount.
  *   unrealized_pl = current_value − net_deposited.
  */
@@ -259,34 +263,32 @@ export function computeManualPosition(
   const current_value = last.total_amount;
   const currency      = last.currency;
 
-  let net_deposited: number;
+  const depositSums = db
+    .prepare<[string, string, number], { pre: number | null; post: number | null }>(
+      `SELECT
+         SUM(CASE WHEN occurred_at <= ? THEN total_amount END) AS pre,
+         SUM(CASE WHEN occurred_at >  ? THEN total_amount END) AS post
+       FROM transactions
+       WHERE investment_id = ? AND kind = 'DEPOSIT'`
+    )
+    .get(first.occurred_at, first.occurred_at, investmentId) as { pre: number | null; post: number | null };
+  const pre  = depositSums?.pre  ?? 0;
+  const post = depositSums?.post ?? 0;
 
-  if (inv.type === "pension") {
-    // Whole calendar months from earliest UPDATE to today
-    const monthly = inv.monthly_deposit ?? 0;
-    if (monthly > 0) {
-      const firstDate = new Date(first.occurred_at);
-      const now = new Date();
-      const months = Math.max(
-        0,
-        (now.getFullYear() - firstDate.getFullYear()) * 12
-          + (now.getMonth() - firstDate.getMonth())
-      );
-      net_deposited = monthly * months;
-    } else {
-      net_deposited = 0;
-    }
-  } else {
-    // Education / Other: sum actual DEPOSIT transactions
-    const row = db
-      .prepare<[number], { total: number | null }>(
-        `SELECT SUM(total_amount) AS total
-         FROM transactions
-         WHERE investment_id = ? AND kind = 'DEPOSIT'`
-      )
-      .get(investmentId);
-    net_deposited = row?.total ?? 0;
+  let implied = 0;
+  const monthly = inv.monthly_deposit ?? 0;
+  if (monthly > 0) {
+    const firstDate = new Date(first.occurred_at);
+    const now = new Date();
+    const months = Math.max(
+      0,
+      (now.getFullYear() - firstDate.getFullYear()) * 12
+        + (now.getMonth() - firstDate.getMonth())
+    );
+    implied = monthly * months;
   }
+
+  const net_deposited = (pre > 0 ? pre : first.total_amount) + post + implied;
 
   return {
     current_value,

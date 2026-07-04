@@ -80,12 +80,9 @@ export function LineChart({ data, currency = "NIS", height = 160, gradId = "lc-g
       >
         <defs>
           <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--grad-from)" stopOpacity="0.18" />
-            <stop offset="100%" stopColor="var(--grad-from)" stopOpacity="0" />
-          </linearGradient>
-          <linearGradient id={`${gradId}-line`} x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stopColor="var(--grad-from)" />
-            <stop offset="100%" stopColor="var(--grad-to)" />
+            <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.32" />
+            <stop offset="55%" stopColor="var(--accent)" stopOpacity="0.10" />
+            <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
           </linearGradient>
         </defs>
 
@@ -96,8 +93,8 @@ export function LineChart({ data, currency = "NIS", height = 160, gradId = "lc-g
         <path
           d={linePath}
           fill="none"
-          stroke={`url(#${gradId}-line)`}
-          strokeWidth={2}
+          stroke="var(--accent)"
+          strokeWidth={2.5}
           strokeLinejoin="round"
           strokeLinecap="round"
         />
@@ -130,7 +127,7 @@ export function LineChart({ data, currency = "NIS", height = 160, gradId = "lc-g
               strokeWidth={1}
               strokeDasharray="3 3"
             />
-            <circle cx={hover.x} cy={hover.y} r={4} fill="var(--grad-from)" stroke="var(--bg)" strokeWidth={2} />
+            <circle cx={hover.x} cy={hover.y} r={4} fill="var(--accent)" stroke="var(--bg)" strokeWidth={2} />
             <rect
               x={Math.min(hover.x + 6, W - 100)}
               y={hover.y - 22}

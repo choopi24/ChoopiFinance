@@ -12,7 +12,7 @@ export function WelcomeState({ userName, onAdd }: WelcomeStateProps) {
       <div className="cf-welcome-icon">
         <TrendingUp size={32} strokeWidth={1.4} />
       </div>
-      <h2 className="cf-welcome-title serif">
+      <h2 className="cf-welcome-title">
         Welcome{userName ? `, ${userName}` : ""}
       </h2>
       <p className="cf-welcome-body">

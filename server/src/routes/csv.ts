@@ -86,10 +86,11 @@ function suggestName(raw: string): string {
   return SUGGESTED_NAMES[trimmed] ?? trimmed;
 }
 
-function detectType(name: string): "pension" | "education" | "other" {
+function detectType(name: string): "pension" | "gemel" | "education" | "money_market" | "other" {
   if (name.includes("פנסיה")) return "pension";
-  if (name.includes("קרן השתלמות")) return "education";
-  if (name.includes("גמל") || name.includes("חיסכון")) return "other";
+  if (name.includes("השתלמות")) return "education";
+  if (name.includes("כספית")) return "money_market";
+  if (name.includes("גמל")) return "gemel";
   return "other";
 }
 
@@ -98,7 +99,7 @@ interface FundSnapshot { date: string; value: number }
 interface ParsedFund {
   originalName: string;
   suggestedName: string;
-  detectedType: "pension" | "education" | "other";
+  detectedType: ReturnType<typeof detectType>;
   snapshots: FundSnapshot[];
 }
 
@@ -235,7 +236,9 @@ function validateTradeRow(
   return errs;
 }
 
-type AssetType = "crypto" | "stock" | "etf" | "pension" | "education" | "other";
+type AssetType = "crypto" | "stock" | "etf" | "pension" | "gemel" | "education" | "money_market" | "other";
+
+const MANUAL_CSV_TYPES = new Set<AssetType>(["pension", "gemel", "education", "money_market", "other"]);
 
 function validateRows(type: AssetType, rows: Record<string, string>[]): {
   errors: ValidationError[];
@@ -284,7 +287,7 @@ function validateRows(type: AssetType, rows: Record<string, string>[]): {
       }
     }
 
-    if (type === "pension" || type === "education" || type === "other") {
+    if (MANUAL_CSV_TYPES.has(type)) {
       const amountField = type === "other" ? "invested_amount" : "balance";
       addErr(required(r.name,        n, "name"));
       addErr(required(r[amountField], n, amountField));
@@ -308,7 +311,7 @@ function validateRows(type: AssetType, rows: Record<string, string>[]): {
 csvRouter.post("/preview/:type", (req, res) => {
   try {
     const type = req.params.type as AssetType;
-    const VALID_TYPES: AssetType[] = ["crypto", "stock", "etf", "pension", "education", "other"];
+    const VALID_TYPES: AssetType[] = ["crypto", "stock", "etf", "pension", "gemel", "education", "money_market", "other"];
     if (!VALID_TYPES.includes(type)) return fail(res, `Invalid type: ${type}`);
 
     const { content } = req.body as { content?: string };
@@ -495,7 +498,7 @@ csvRouter.post("/import-matrix", (req, res) => {
     const { funds, errors } = parseWideMatrix(content);
     if (errors.length > 0) return fail(res, "CSV has validation errors — re-run preview first");
 
-    const VALID_TYPES = new Set(["pension", "education", "other"]);
+    const VALID_TYPES = new Set(["pension", "gemel", "education", "money_market", "other"]);
     let investments_created = 0;
     let transactions_created = 0;
 

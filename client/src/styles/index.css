@@ -1,16 +1,8 @@
-/* 1. Fonts — IBM Plex superfamily, bundled locally via @fontsource (offline)
-   IBM Plex Sans   → all UI, body, headings  (variable build)
-   IBM Plex Mono   → all numeric output       (static weights — no variable build published)
-   IBM Plex Serif  → display / wordmark only  (static weights — no variable build published) */
-@import "@fontsource-variable/ibm-plex-sans";
-@import "@fontsource/ibm-plex-mono/400.css";
-@import "@fontsource/ibm-plex-mono/500.css";
-@import "@fontsource/ibm-plex-mono/600.css";
-@import "@fontsource/ibm-plex-mono/700.css";
-@import "@fontsource/ibm-plex-serif/400.css";
-@import "@fontsource/ibm-plex-serif/500.css";
-@import "@fontsource/ibm-plex-serif/600.css";
-@import "@fontsource/ibm-plex-serif/700.css";
+/* 1. Fonts — bundled locally via @fontsource (offline)
+   Hanken Grotesk    → all UI, body, headings  (variable build)
+   Spline Sans Mono  → all numeric output       (variable build) */
+@import "@fontsource-variable/hanken-grotesk";
+@import "@fontsource-variable/spline-sans-mono";
 
 /* 2. Design tokens (CSS custom properties, light/dark themes) */
 @import "./tokens.css";
@@ -36,8 +28,10 @@
   --color-text-faint:    var(--text-faint);
   --color-emerald:       var(--emerald);
   --color-rose:          var(--rose);
-  --color-accent:        var(--grad-from);
-  --color-accent-2:      var(--grad-to);
+  --color-amber:         var(--amber);
+  --color-accent:        var(--accent);
+  --color-accent-soft:   var(--accent-soft);
+  --color-accent-ink:    var(--accent-ink);
   --color-c-crypto:      var(--c-crypto);
   --color-c-stocks:      var(--c-stocks);
   --color-c-etf:         var(--c-etf);
@@ -47,7 +41,6 @@
 
   --font-sans:  var(--font-sans);
   --font-mono:  var(--font-mono);
-  --font-serif: var(--font-serif);
 
   --radius-xs:   var(--r-xs);
   --radius-sm:   var(--r-sm);
@@ -63,7 +56,7 @@ html, body { margin: 0; padding: 0; }
 
 *:focus { outline: none; }
 *:focus-visible {
-  outline: 2px solid var(--grad-from);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
   border-radius: 3px;
 }
@@ -89,11 +82,6 @@ body {
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum" 1, "zero" 1;
 }
-.serif {
-  font-family: var(--font-serif);
-  letter-spacing: -0.01em;
-}
-
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }

@@ -21,6 +21,7 @@ import { settingsRouter } from "./routes/settings.js";
 import { lookupRouter } from "./routes/lookup.js";
 import { csvRouter } from "./routes/csv.js";
 import { searchRouter } from "./routes/search.js";
+import { ilFundsRouter } from "./routes/ilFunds.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { takeSnapshot } from "./services/snapshot.js";
 import { getRate } from "./services/fx.js";
@@ -43,11 +44,25 @@ app.use(cookieParser());
 // Initialise DB + run migrations on startup
 getDb();
 
-// Warm the FX cache on boot (best-effort, non-blocking)
+// Warm the FX cache on boot (best-effort, non-blocking), then backfill missed
+// daily snapshots — the 02:00 cron never fires on a machine that sleeps at
+// night, so on boot snapshot any user without one in the last 20 hours.
 getRate(getDb()).then(r => {
   console.log(`FX cache warm  →  1 USD = ${r.rate.toFixed(4)} NIS (${r.source})`);
 }).catch(() => {
   console.warn("FX warm-up skipped (Frankfurter unreachable, will retry on first request)");
+}).finally(() => {
+  const db = getDb();
+  const cutoff = new Date(Date.now() - 20 * 60 * 60 * 1000).toISOString();
+  const users = db.prepare(
+    `SELECT id FROM users u
+     WHERE NOT EXISTS (
+       SELECT 1 FROM portfolio_snapshots s
+       WHERE s.user_id = u.id AND s.snapshot_at >= ?
+     )`
+  ).all(cutoff) as { id: number }[];
+  for (const u of users) takeSnapshot(db, u.id);
+  if (users.length > 0) console.log(`[boot] Backfilled snapshots for ${users.length} user(s)`);
 });
 
 // Routes
@@ -66,7 +81,8 @@ app.use("/api/fx",           fxRouter);
 app.use("/api/settings",     settingsRouter);
 app.use("/api/lookup",       lookupRouter);
 app.use("/api/csv",          csvRouter);
-app.use("/api/search",      searchRouter);
+app.use("/api/search",       searchRouter);
+app.use("/api/il-funds",     ilFundsRouter);
 
 app.use(errorHandler);
 

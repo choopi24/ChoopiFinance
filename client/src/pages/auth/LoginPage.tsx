@@ -69,7 +69,7 @@ export default function LoginPage() {
           <div
             className="cf-login-mark"
             style={{
-              background: "linear-gradient(135deg, var(--grad-from), var(--grad-to))",
+              background: "linear-gradient(135deg, var(--accent), var(--accent))",
               display: "grid",
               placeItems: "center",
               color: "white",
@@ -83,12 +83,12 @@ export default function LoginPage() {
                 </linearGradient>
               </defs>
               <rect x="4" y="4" width="48" height="48" rx="14" fill="url(#lm-g)" />
-              <path d="M20 36V20a6 6 0 0 1 6-6h8a6 6 0 0 1 6 6" fill="none" stroke="var(--grad-from)" strokeWidth="3.5" strokeLinecap="round" />
-              <circle cx="36" cy="36" r="3" fill="var(--grad-from)" />
+              <path d="M20 36V20a6 6 0 0 1 6-6h8a6 6 0 0 1 6 6" fill="none" stroke="var(--accent)" strokeWidth="3.5" strokeLinecap="round" />
+              <circle cx="36" cy="36" r="3" fill="var(--accent)" />
             </svg>
           </div>
 
-          <h1 className="cf-login-h1 serif">
+          <h1 className="cf-login-h1">
             Your portfolio,<br />
             <em>your server.</em>
           </h1>
@@ -101,7 +101,7 @@ export default function LoginPage() {
           <ul className="cf-login-feats">
             {FEATURES.map((f, i) => (
               <li key={i}>
-                <span style={{ color: "var(--grad-from)", flexShrink: 0 }}>{f.icon}</span>
+                <span style={{ color: "var(--accent)", flexShrink: 0 }}>{f.icon}</span>
                 {f.text}
               </li>
             ))}

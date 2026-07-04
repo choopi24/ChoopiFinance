@@ -111,7 +111,7 @@ export function ProjectionPanel({ investment: inv, currency, fxRate, onClose }: 
               step={1}
               value={years}
               onChange={e => setYears(Number(e.target.value))}
-              style={{ accentColor: "var(--grad-from)" }}
+              style={{ accentColor: "var(--accent)" }}
             />
           </div>
 

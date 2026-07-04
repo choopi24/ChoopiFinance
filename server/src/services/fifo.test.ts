@@ -300,19 +300,19 @@ describe("computeManualPosition — pension (monthly_deposit model)", () => {
     expect(pos.last_update_at).toBeNull();
   });
 
-  it("pension with no monthly_deposit → net_deposited=0, unrealized=current_value", () => {
+  it("pension with no monthly_deposit → opening balance is principal, not profit", () => {
     const invId = insertInvestment(db, "pension", null);
     update(db, invId, 50_000, "2024-01-01");
     update(db, invId, 53_000, "2024-06-01");
 
     const pos = computeManualPosition(db, invId, { type: "pension", monthly_deposit: null });
     expect(pos.current_value).toBe(53_000);
-    expect(pos.net_deposited).toBe(0);
-    expect(pos.unrealized_pl).toBe(53_000);
+    expect(pos.net_deposited).toBe(50_000);
+    expect(pos.unrealized_pl).toBe(3_000);  // growth since tracking started
     expect(pos.update_count).toBe(2);
   });
 
-  it("pension: monthly_deposit=2000, first update 12 months ago → expected_deposited=24k, P/L +6k", () => {
+  it("pension: monthly_deposit=2000, first update 12 months ago → principal = opening + 24k", () => {
     const invId = insertInvestment(db, "pension", 2_000);
 
     // First UPDATE exactly 12 calendar months ago
@@ -321,12 +321,12 @@ describe("computeManualPosition — pension (monthly_deposit model)", () => {
     const firstIso = firstDate.toISOString().replace(/\.\d{3}Z$/, "Z");
 
     update(db, invId, 20_000, firstIso);      // initial snapshot
-    update(db, invId, 30_000, new Date().toISOString()); // current snapshot
+    update(db, invId, 50_000, new Date().toISOString()); // current snapshot
 
     const pos = computeManualPosition(db, invId, { type: "pension", monthly_deposit: 2_000 });
 
-    expect(pos.current_value).toBe(30_000);
-    expect(pos.net_deposited).toBe(24_000);       // 2000 × 12
+    expect(pos.current_value).toBe(50_000);
+    expect(pos.net_deposited).toBe(44_000);       // 20 000 opening + 2000 × 12
     expect(pos.unrealized_pl).toBeCloseTo(6_000, 2);
     expect(pos.update_count).toBe(2);
   });
@@ -339,11 +339,11 @@ describe("computeManualPosition — pension (monthly_deposit model)", () => {
     const sixMonthsAgo = new Date();
     sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
     update(db, invId, 5_000, sixMonthsAgo.toISOString());
-    update(db, invId, 7_000, new Date().toISOString());
+    update(db, invId, 12_000, new Date().toISOString());
 
     const pos = computeManualPosition(db, invId, { type: "pension", monthly_deposit: 1_000 });
-    expect(pos.net_deposited).toBe(6_000);  // 1000 × 6
-    expect(pos.unrealized_pl).toBe(1_000);  // 7000 - 6000
+    expect(pos.net_deposited).toBe(11_000);  // 5000 opening + 1000 × 6
+    expect(pos.unrealized_pl).toBe(1_000);   // 12 000 − 11 000
   });
 });
 
@@ -354,15 +354,27 @@ describe("computeManualPosition — education / other (DEPOSIT model)", () => {
     db = makeDb();
   });
 
-  it("no DEPOSIT transactions → net_deposited=0, unrealized=current_value", () => {
+  it("no DEPOSIT transactions → opening balance is principal, P/L = 0", () => {
     const invId = insertInvestment(db, "education");
     update(db, invId, 100_000, "2024-01-01");
 
     const pos = computeManualPosition(db, invId, { type: "education" });
     expect(pos.current_value).toBe(100_000);
-    expect(pos.net_deposited).toBe(0);
-    expect(pos.unrealized_pl).toBe(100_000);
+    expect(pos.net_deposited).toBe(100_000);
+    expect(pos.unrealized_pl).toBe(0);
     expect(pos.update_count).toBe(1);
+  });
+
+  it("contribution after tracking started raises principal and value equally", () => {
+    const invId = insertInvestment(db, "education");
+    update(db, invId, 10_000, "2024-01-01");   // opening balance
+    deposit(db, invId, 2_000, "2024-03-01");   // /contribute: DEPOSIT…
+    update(db, invId, 12_500, "2024-03-01");   // …+ balance snapshot
+
+    const pos = computeManualPosition(db, invId, { type: "education" });
+    expect(pos.current_value).toBe(12_500);
+    expect(pos.net_deposited).toBe(12_000);    // 10 000 opening + 2 000 contribution
+    expect(pos.unrealized_pl).toBe(500);       // only market growth counts
   });
 
   it("education: two DEPOSITs (1000+1000) + UPDATE 2500 → P/L +500", () => {

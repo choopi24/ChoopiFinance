@@ -5,6 +5,7 @@ import { TypeCard } from "./TypeCard";
 import { Button } from "./Button";
 import { Segment } from "./Segment";
 import { TickerAutocomplete } from "./TickerAutocomplete";
+import { IlFundAutocomplete } from "./IlFundAutocomplete";
 import {
   useCreateInvestment, useAddTransaction, useEditInvestment,
   useCheckExisting, useBulkTransactions,
@@ -13,17 +14,19 @@ import { useQuote } from "../hooks/usePrices";
 import { api } from "../lib/api";
 import { fmt } from "../lib/fmt";
 import type { AssetType, Currency } from "@choopi/shared";
-import type { Investment, BulkTransactionRow, SymbolHit } from "../hooks/useInvestments";
+import type { Investment, BulkTransactionRow, SymbolHit, IlFundHit } from "../hooks/useInvestments";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const TYPES: { type: AssetType; label: string; desc: string }[] = [
-  { type: "crypto",    label: "Crypto",    desc: "Bitcoin, Ethereum, altcoins" },
-  { type: "stock",     label: "Stock",     desc: "Equities on any exchange" },
-  { type: "etf",       label: "ETF",       desc: "Index funds, UCITS ETFs" },
-  { type: "pension",   label: "Pension",   desc: "Retirement savings fund" },
-  { type: "education", label: "Education", desc: "Savings plan with liquidation date" },
-  { type: "other",     label: "Other",     desc: "Real estate, collectibles, etc." },
+  { type: "crypto",       label: "Crypto",       desc: "Bitcoin, Ethereum, altcoins" },
+  { type: "stock",        label: "Stock",        desc: "Equities on any exchange" },
+  { type: "etf",          label: "ETF",          desc: "Index funds, UCITS ETFs" },
+  { type: "pension",      label: "Pension",      desc: "קרן פנסיה — retirement fund" },
+  { type: "gemel",        label: "Gemel",        desc: "קופת גמל — provident fund" },
+  { type: "education",    label: "Study fund",   desc: "קרן השתלמות — 6-year savings" },
+  { type: "money_market", label: "Money market", desc: "קרן כספית — cash-like fund" },
+  { type: "other",        label: "Other",        desc: "Real estate, collectibles, etc." },
 ];
 
 const CCY_OPTIONS = [
@@ -40,7 +43,11 @@ const ENTRY_MODE_OPTIONS = [
 ];
 
 const CRYPTO_SUGGESTIONS = ["BTC", "ETH", "SOL", "ADA", "XRP", "DOT"];
-const MANUAL_TYPES = new Set(["pension", "education", "other"]);
+const MANUAL_TYPES = new Set(["pension", "gemel", "education", "money_market", "other"]);
+// Types covered by the regulator's Gemel-Net / Pensia-Net datasets (fund picker + auto yields).
+const IL_FUND_TYPES = new Set(["pension", "gemel", "education"]);
+// Manual types that log one-off DEPOSIT rows (pension uses the monthly-deposit model instead).
+const DEPOSIT_ROW_TYPES = new Set(["gemel", "education", "money_market", "other"]);
 
 interface IsinResult {
   isin: string; symbol: string; name: string;
@@ -72,11 +79,17 @@ export function InvestmentModal({ mode, investment, onClose }: InvestmentModalPr
     <div className="cf-modal-backdrop" onClick={onClose}>
       <div
         className="cf-modal"
-        style={{ maxWidth: step === 1 ? 560 : 540 }}
+        style={{ maxWidth: 520 }}
         onClick={e => e.stopPropagation()}
       >
         <div className="cf-modal-head">
           <div>
+            {mode === "add" && (
+              <div className="cf-modal-steps">
+                <span className={`cf-step-dot ${step === 1 ? "is-on" : "is-done"}`} />
+                <span className={`cf-step-dot ${step === 2 ? "is-on" : ""}`} />
+              </div>
+            )}
             <div className="cf-modal-step">
               {mode === "edit" ? "Edit investment" : `Step ${step} of 2`}
             </div>
@@ -788,11 +801,24 @@ function ManualForm({
   const [currency, setCurrency]         = useState<Currency>("NIS");
   const [liquidDate, setLiqDate]        = useState("");
   const [date, setDate]                 = useState(today());
-  // Pension-specific
+  // Monthly contribution model (pension / gemel / education)
   const [monthlyDeposit, setMonthlyDep] = useState("");
   const [depCcy, setDepCcy]             = useState<Currency>("NIS");
-  // Education / Other DEPOSIT rows (holding mode only)
+  // One-off DEPOSIT rows (holding mode only)
   const [deposits, setDeposits]         = useState<DepositRow[]>([]);
+  // Israeli fund linkage (Gemel-Net / Pensia-Net)
+  const [fund, setFund]                 = useState<IlFundHit | null>(null);
+  const [feeDeposit, setFeeDeposit]     = useState("");
+  const [feeBalance, setFeeBalance]     = useState("");
+
+  const isIlFund = IL_FUND_TYPES.has(type);
+
+  function applyFund(h: IlFundHit) {
+    setFund(h);
+    setName(h.name);
+    if (h.avg_deposit_fee != null && feeDeposit === "") setFeeDeposit(String(h.avg_deposit_fee));
+    if (h.avg_annual_mgmt_fee != null && feeBalance === "") setFeeBalance(String(h.avg_annual_mgmt_fee));
+  }
 
   const createInv  = useCreateInvestment();
   const bulkTx     = useBulkTransactions();
@@ -816,6 +842,11 @@ function ManualForm({
     const md = monthlyDeposit ? Number(monthlyDeposit) : undefined;
     if (md !== undefined && (isNaN(md) || md < 0)) { setError("Monthly deposit must be a non-negative number"); return; }
 
+    const fDep = feeDeposit !== "" ? Number(feeDeposit) : undefined;
+    const fBal = feeBalance !== "" ? Number(feeBalance) : undefined;
+    if (fDep !== undefined && (isNaN(fDep) || fDep < 0 || fDep > 15)) { setError("Deposit fee must be 0–15%"); return; }
+    if (fBal !== undefined && (isNaN(fBal) || fBal < 0 || fBal > 5))  { setError("Balance fee must be 0–5%/yr"); return; }
+
     try {
       const inv = await createInv.mutateAsync({
         type,
@@ -824,12 +855,16 @@ function ManualForm({
         currency,
         liquid_date: type === "education" && liquidDate ? liquidDate : undefined,
         occurred_at: new Date(date).toISOString(),
-        monthly_deposit: type === "pension" && entryMode === "holding" ? md : undefined,
-        deposit_currency: type === "pension" && entryMode === "holding" ? depCcy : undefined,
+        monthly_deposit: isIlFund && entryMode === "holding" ? md : undefined,
+        deposit_currency: isIlFund && entryMode === "holding" ? depCcy : undefined,
+        fund_id: fund?.fund_id ?? undefined,
+        fund_track: fund?.name ?? undefined,
+        fee_deposit_pct: isIlFund ? fDep : undefined,
+        fee_balance_pct: isIlFund ? fBal : undefined,
       });
 
-      // For education/other in holding mode: add DEPOSIT rows via bulk endpoint
-      if (entryMode === "holding" && (type === "education" || type === "other") && deposits.length > 0) {
+      // Non-pension manual funds in holding mode: add DEPOSIT rows via bulk endpoint
+      if (entryMode === "holding" && DEPOSIT_ROW_TYPES.has(type) && deposits.length > 0) {
         const validDeposits = deposits.filter(r => r.amount && Number(r.amount) > 0 && r.date);
         if (validDeposits.length > 0) {
           const rows: BulkTransactionRow[] = validDeposits.map(r => ({
@@ -850,11 +885,51 @@ function ManualForm({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <Field label="Name">
-        <input value={name} onChange={e => setName(e.target.value)} autoFocus placeholder={
-          type === "pension" ? "Menora Pension" : type === "education" ? "Education Fund" : "Wine collection"
-        } />
-      </Field>
+      {isIlFund ? (
+        <Field label="Fund name" hint="Type the Hebrew name to search the regulator's fund list (מסלול-specific)">
+          <IlFundAutocomplete
+            type={type}
+            value={name}
+            onChange={v => { setName(v); if (fund) setFund(null); }}
+            onSelect={applyFund}
+            placeholder={type === "pension" ? "מנורה מבטחים פנסיה…" : type === "gemel" ? "הפניקס גמל…" : "אלטשולר השתלמות…"}
+            autoFocus
+          />
+          {fund && (
+            <div className="cf-quote-preview" style={{ marginTop: 6 }}>
+              Linked to fund <span className="mono">#{fund.fund_id}</span>
+              {fund.year_to_date_yield != null && <> · YTD <span className="mono">{fund.year_to_date_yield}%</span></>}
+              {" — published yields will keep the value fresh between balance updates."}
+              <button
+                type="button"
+                onClick={() => setFund(null)}
+                style={{ marginLeft: 8, color: "var(--text-faint)", textDecoration: "underline", background: "none", border: 0, cursor: "pointer", fontSize: 11 }}
+              >
+                Unlink
+              </button>
+            </div>
+          )}
+        </Field>
+      ) : (
+        <Field label="Name">
+          <input value={name} onChange={e => setName(e.target.value)} autoFocus placeholder={
+            type === "money_market" ? "קרן כספית שקלית…" : "Wine collection"
+          } />
+        </Field>
+      )}
+
+      {isIlFund && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <Field label="Fee on deposits (%)" hint="דמי ניהול מהפקדה — from your statement">
+            <input type="number" min="0" max="15" step="any" value={feeDeposit}
+              onChange={e => setFeeDeposit(e.target.value)} placeholder="e.g. 1.5" />
+          </Field>
+          <Field label="Fee on balance (%/yr)" hint="דמי ניהול מצבירה">
+            <input type="number" min="0" max="5" step="any" value={feeBalance}
+              onChange={e => setFeeBalance(e.target.value)} placeholder="e.g. 0.6" />
+          </Field>
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label={entryMode === "holding" ? "Current balance" : "Initial balance (optional)"}>
@@ -871,10 +946,10 @@ function ManualForm({
           max={entryMode === "holding" ? today() : undefined} />
       </Field>
 
-      {/* Pension: monthly deposit fields (holding mode only) */}
-      {type === "pension" && entryMode === "holding" && (
+      {/* IL funds: expected monthly contribution (holding mode only) */}
+      {isIlFund && entryMode === "holding" && (
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <Field label="Monthly deposit" hint="Used to calculate net invested">
+          <Field label="Monthly deposit" hint="Expected contribution — used for net invested & estimates">
             <input type="number" min="0" step="any" value={monthlyDeposit}
               onChange={e => setMonthlyDep(e.target.value)} placeholder="0" />
           </Field>
@@ -891,8 +966,8 @@ function ManualForm({
         </Field>
       )}
 
-      {/* Education / Other: initial DEPOSIT rows (holding mode only) */}
-      {entryMode === "holding" && (type === "education" || type === "other") && (
+      {/* Non-pension manual funds: initial DEPOSIT rows (holding mode only) */}
+      {entryMode === "holding" && DEPOSIT_ROW_TYPES.has(type) && (
         <div>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
             <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text-soft)" }}>
@@ -952,6 +1027,10 @@ function EditMetaForm({
   const [liquidDate, setLiqDate]  = useState(investment.liquid_date?.slice(0, 10) ?? "");
   const [monthlyDep, setMonthlyDep] = useState(investment.monthly_deposit?.toString() ?? "");
   const [depCcy, setDepCcy]       = useState<Currency>((investment.deposit_currency as Currency) ?? "NIS");
+  const [feeDeposit, setFeeDeposit] = useState(investment.fee_deposit_pct?.toString() ?? "");
+  const [feeBalance, setFeeBalance] = useState(investment.fee_balance_pct?.toString() ?? "");
+
+  const isIlFund = IL_FUND_TYPES.has(investment.type);
 
   const editMut  = useEditInvestment();
   const isPending = editMut.isPending;
@@ -967,7 +1046,9 @@ function EditMetaForm({
         etf_kind: (etfKind || undefined) as "accumulating" | "distributing" | undefined,
         liquid_date: liquidDate || undefined,
         monthly_deposit: monthlyDep ? Number(monthlyDep) : undefined,
-        deposit_currency: investment.type === "pension" ? depCcy : undefined,
+        deposit_currency: isIlFund ? depCcy : undefined,
+        fee_deposit_pct: isIlFund ? (feeDeposit !== "" ? Number(feeDeposit) : null) : undefined,
+        fee_balance_pct: isIlFund ? (feeBalance !== "" ? Number(feeBalance) : null) : undefined,
       }});
       onClose();
     } catch (e) {
@@ -1009,16 +1090,34 @@ function EditMetaForm({
         </Field>
       )}
 
-      {investment.type === "pension" && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <Field label="Monthly deposit" hint="Used to calculate net invested">
-            <input type="number" min="0" step="any" value={monthlyDep}
-              onChange={e => setMonthlyDep(e.target.value)} placeholder="0" />
-          </Field>
-          <Field label="Deposit currency">
-            <Segment options={CCY_OPTIONS} value={depCcy} onChange={setDepCcy} />
-          </Field>
-        </div>
+      {isIlFund && (
+        <>
+          {investment.fund_track && (
+            <div className="cf-quote-preview" dir="auto">
+              Linked fund: {investment.fund_track}
+              {investment.fund_id != null && <span className="mono"> · #{investment.fund_id}</span>}
+            </div>
+          )}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Monthly deposit" hint="Expected contribution — used for net invested & estimates">
+              <input type="number" min="0" step="any" value={monthlyDep}
+                onChange={e => setMonthlyDep(e.target.value)} placeholder="0" />
+            </Field>
+            <Field label="Deposit currency">
+              <Segment options={CCY_OPTIONS} value={depCcy} onChange={setDepCcy} />
+            </Field>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Fee on deposits (%)" hint="דמי ניהול מהפקדה">
+              <input type="number" min="0" max="15" step="any" value={feeDeposit}
+                onChange={e => setFeeDeposit(e.target.value)} placeholder="e.g. 1.5" />
+            </Field>
+            <Field label="Fee on balance (%/yr)" hint="דמי ניהול מצבירה">
+              <input type="number" min="0" max="5" step="any" value={feeBalance}
+                onChange={e => setFeeBalance(e.target.value)} placeholder="e.g. 0.6" />
+            </Field>
+          </div>
+        </>
       )}
 
       <div className="cf-modal-actions" style={{ marginTop: 8 }}>
