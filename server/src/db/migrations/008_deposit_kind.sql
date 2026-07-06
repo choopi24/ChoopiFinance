@@ -11,6 +11,9 @@ PRAGMA foreign_keys = OFF;
 -- Clean up any leftover temp table from a previously interrupted migration run.
 DROP TABLE IF EXISTS __tx_deposit_tmp__;
 
+-- Note: wallet_id (dead column, dropped for good in 010) is intentionally NOT
+-- carried over — current fresh installs no longer have it in schema.sql, and
+-- upgrading DBs lose nothing (the column was never written by any code path).
 CREATE TABLE __tx_deposit_tmp__ (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   investment_id   INTEGER NOT NULL REFERENCES investments(id) ON DELETE CASCADE,
@@ -20,7 +23,6 @@ CREATE TABLE __tx_deposit_tmp__ (
   price_per_unit  REAL,
   total_amount    REAL    NOT NULL,
   currency        TEXT    NOT NULL CHECK(currency IN ('NIS','USD')),
-  wallet_id       INTEGER REFERENCES crypto_wallets(id) ON DELETE SET NULL,
   occurred_at     TEXT    NOT NULL,
   notes           TEXT,
   realized_pl     REAL,
@@ -30,9 +32,9 @@ CREATE TABLE __tx_deposit_tmp__ (
 
 INSERT INTO __tx_deposit_tmp__
   (id, investment_id, user_id, kind, units, price_per_unit, total_amount,
-   currency, wallet_id, occurred_at, notes, realized_pl, fx_rate_at_buy, created_at)
+   currency, occurred_at, notes, realized_pl, fx_rate_at_buy, created_at)
   SELECT id, investment_id, user_id, kind, units, price_per_unit, total_amount,
-         currency, wallet_id, occurred_at, notes, realized_pl, fx_rate_at_buy, created_at
+         currency, occurred_at, notes, realized_pl, fx_rate_at_buy, created_at
   FROM transactions;
 
 DROP TABLE transactions;

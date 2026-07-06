@@ -15,6 +15,9 @@ PRAGMA foreign_keys=OFF;
 
 BEGIN;
 
+-- Re-run safety: clear any temp table left by a crashed earlier attempt.
+DROP TABLE IF EXISTS investments_new;
+
 CREATE TABLE investments_new (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

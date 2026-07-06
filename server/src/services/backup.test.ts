@@ -143,6 +143,9 @@ describe("JSON export → import round-trip", () => {
     expect(ev.grant_id).toBe(grant.id);
     expect(ev.transaction_id).toBe(tx.id);
 
+    // No orphans anywhere after the remap.
+    expect(db.pragma("foreign_key_check")).toEqual([]);
+
     // Re-export equals first export modulo ids/timestamps.
     const again = buildExport(db, 1);
     expect(again.investments).toHaveLength(1);

@@ -327,3 +327,36 @@ describe("enrichInvestment — Israeli fund estimated value (Gemel-Net yields)",
     expect(e.current_value_nis).toBe(100_000);
   });
 });
+
+describe("computePortfolio — manual asset agrees with its card (documented formula)", () => {
+  let db: Database.Database;
+  beforeEach(() => { db = makeDb(); setRate(db, 4); });
+
+  it("pension with monthly_deposit: net_deposited = opening + monthly×months; card == portfolio", () => {
+    const r = db.prepare(
+      "INSERT INTO investments (user_id, type, name, monthly_deposit) VALUES (1, 'pension', 'P', 2000)"
+    ).run();
+    const invId = r.lastInsertRowid as number;
+
+    // First balance exactly 6 whole months ago, current balance today.
+    const first = new Date(); first.setMonth(first.getMonth() - 6);
+    db.prepare(
+      "INSERT INTO transactions (investment_id, user_id, kind, total_amount, currency, occurred_at) VALUES (?, 1, 'UPDATE', 100000, 'NIS', ?)"
+    ).run(invId, first.toISOString());
+    db.prepare(
+      "INSERT INTO transactions (investment_id, user_id, kind, total_amount, currency, occurred_at) VALUES (?, 1, 'UPDATE', 130000, 'NIS', ?)"
+    ).run(invId, new Date().toISOString());
+
+    // Card level (enrichInvestment)
+    const row = db.prepare("SELECT * FROM investments WHERE id = ?").get(invId);
+    const card = enrichInvestment(db, row as never, { rate: 4, source: "cached" });
+    expect(card.net_deposited_nis).toBe(112_000);            // 100k opening + 2000 × 6
+    expect(card.unrealized_pl_nis).toBe(18_000);             // 130k − 112k (not +130k)
+
+    // Portfolio level agrees exactly.
+    const p = computePortfolio(db, 1);
+    expect(p.total_net_deposited_nis).toBe(card.net_deposited_nis); // manual asset included
+    expect(p.unrealized_pl_nis).toBeCloseTo(card.unrealized_pl_nis, 9);
+    expect(p.total_value_nis).toBe(130_000);
+  });
+});
