@@ -2,69 +2,61 @@ import { Router } from "express";
 import { getDb } from "../db/init.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { ok, fail } from "../middleware/respond.js";
-import { computePortfolio, getUsdNisRate } from "../services/portfolio.js";
+import { computePortfolio, today, type Currency } from "../services/valuation.js";
+import { monthlySeries, pickDecomposition } from "./accounts.js";
 
 export const portfolioRouter = Router();
 portfolioRouter.use(requireAuth);
 
-// GET /api/portfolio
+function displayCcy(req: { user?: { display_currency?: string } }): Currency {
+  return (req.user?.display_currency === "USD" ? "USD" : "ILS");
+}
+
+// GET /api/portfolio?as_of=&currency= — the headline numbers:
+// value, my money (principal), earnings, fees eaten — plus per-account detail.
 portfolioRouter.get("/", (req, res) => {
   try {
     const db = getDb();
-    const summary = computePortfolio(db, req.user!.id);
-    ok(res, summary);
+    const asOf = req.query.as_of ? String(req.query.as_of).slice(0, 10) : today();
+    const ccy = req.query.currency ? String(req.query.currency) as Currency : displayCcy(req);
+    ok(res, computePortfolio(db, req.user!.id, ccy, asOf));
   } catch (e) {
     fail(res, (e as Error).message, 500);
   }
 });
 
-// POST /api/portfolio/snapshot  — store current state in portfolio_snapshots
-portfolioRouter.post("/snapshot", (req, res) => {
-  try {
-    const db = getDb();
-    const { total_value_nis, total_net_deposited_nis } = computePortfolio(db, req.user!.id);
-    const fx = getUsdNisRate(db);
-    const total_value_usd = total_value_nis / fx.rate;
-    const total_net_deposited_usd = total_net_deposited_nis / fx.rate;
-
-    const row = db.prepare(
-      `INSERT INTO portfolio_snapshots
-         (user_id, total_value_nis, total_value_usd, total_net_deposited_nis, total_net_deposited_usd)
-       VALUES (?, ?, ?, ?, ?)`
-    ).run(req.user!.id, total_value_nis, total_value_usd, total_net_deposited_nis, total_net_deposited_usd);
-
-    ok(res, { id: row.lastInsertRowid }, 201);
-  } catch (e) {
-    fail(res, (e as Error).message, 500);
-  }
-});
-
-// GET /api/portfolio/history?range=1M|3M|1Y|ALL
+// GET /api/portfolio/history?from=&to= — month-end decomposition for the chart.
+// Recomputed from the ledger on demand, so back-dating an entry corrects history
+// instead of leaving a stale stored series behind.
 portfolioRouter.get("/history", (req, res) => {
   try {
     const db = getDb();
-    const range = (req.query.range as string) ?? "1Y";
+    const ccy = req.query.currency ? String(req.query.currency) as Currency : displayCcy(req);
+    const to = req.query.to ? String(req.query.to).slice(0, 10) : today();
 
-    const cutoffs: Record<string, string> = {
-      "1M": new Date(Date.now() - 30  * 86_400_000).toISOString(),
-      "3M": new Date(Date.now() - 90  * 86_400_000).toISOString(),
-      "1Y": new Date(Date.now() - 365 * 86_400_000).toISOString(),
-      "ALL": "1970-01-01T00:00:00Z",
-    };
-    const cutoff = cutoffs[range] ?? cutoffs["1Y"];
+    const firstRow = db.prepare(
+      "SELECT MIN(occurred_on) AS first FROM entries WHERE user_id = ?"
+    ).get(req.user!.id) as { first: string | null };
 
-    const rows = db
-      .prepare(
-        `SELECT snapshot_at, total_value_nis, total_value_usd,
-                total_net_deposited_nis, total_net_deposited_usd
-         FROM portfolio_snapshots
-         WHERE user_id = ? AND snapshot_at >= ?
-         ORDER BY snapshot_at ASC`
-      )
-      .all(req.user!.id, cutoff);
+    if (!firstRow.first) return ok(res, { display_currency: ccy, points: [] });
 
-    ok(res, { range, snapshots: rows });
+    const from = req.query.from ? String(req.query.from).slice(0, 10) : firstRow.first;
+    const points = monthlySeries(from, to, d =>
+      pickDecomposition(asDisplay(computePortfolio(db, req.user!.id, ccy, d)))
+    );
+
+    ok(res, { display_currency: ccy, points });
   } catch (e) {
     fail(res, (e as Error).message, 500);
   }
 });
+
+/** computePortfolio already reports in display currency; adapt the field names. */
+function asDisplay(p: { value: number; principal: number; gross_earnings: number; fees: number }) {
+  return {
+    value_display: p.value,
+    principal_display: p.principal,
+    gross_earnings_display: p.gross_earnings,
+    fees_display: p.fees,
+  };
+}

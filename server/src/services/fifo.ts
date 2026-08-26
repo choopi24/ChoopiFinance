@@ -1,301 +1,88 @@
 /**
- * FIFO cost-basis engine for Crypto / Stock / ETF investments.
+ * FIFO lot engine — pure, no DB, no Express.
  *
- * Assumptions:
- *  - All BUY and SELL transactions for one investment share the same currency.
- *    If they don't, pass fx_rate_at_buy on each BUY to normalise to NIS.
- *  - "Units" means shares, coins, or ETF units — always positive numbers.
- *  - Floating-point comparison uses a 1e-10 epsilon guard (sub-satoshi noise).
+ * Answers, for a market-priced account: how many units are still held, and what
+ * did those units cost? The cost basis of *held* units is the money of yours
+ * still sitting in the account (principal). Money released by a sell is split
+ * into return-of-principal and realized gain.
  *
- * This file has no Express dependency and is pure business logic so it can be
- * imported directly by vitest tests with no extra mocking.
+ * Callers map ledger rows into LotEvent[]; this file never touches SQL.
  */
 
-import type Database from "better-sqlite3";
-
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-export interface FifoLot {
-  tx_id: number;
-  units_remaining: number;
+export interface LotEvent {
+  kind: "buy" | "sell";
+  quantity: number;
   price_per_unit: number;
-  currency: string;
-  occurred_at: string;
+  /** YYYY-MM-DD — events must be passed in chronological order. */
+  occurred_on: string;
 }
 
-export interface PositionResult {
-  remaining_units: number;
-  cost_basis_remaining: number; // sum(units_remaining * price_per_unit) + cost_only_value, native
-  cost_only_value: number;      // BUY amounts with no units (valued at cost, no live price)
-  realized_pl_total: number;    // sum of all SELL realized P/Ls
-  currency: string;
-  lots: FifoLot[];              // surviving BUY lots
-  is_closed: boolean;           // no remaining units AND no cost-only amount
+export interface OpenLot {
+  quantity: number;
+  price_per_unit: number;
+  occurred_on: string;
 }
 
-export interface RealizationDetail {
-  sell_tx_id: number;
-  realized_pl: number;
-  currency: string;
+export interface FifoPosition {
+  /** Units still held. */
+  quantity: number;
+  /** Cost basis of held units — the principal still invested. */
+  cost_basis: number;
+  /** Lifetime realized gain/loss from sells (not part of current value). */
+  realized_gain: number;
+  /** Lifetime gross proceeds taken out by sells. */
+  proceeds: number;
+  /** Surviving buy lots, oldest first. */
+  lots: OpenLot[];
+  /** A sell that exceeded units on hand — signals a data-entry mistake. */
+  oversold_units: number;
 }
 
-export interface ManualPositionResult {
-  current_value: number;
-  /** Principal baseline for P/L (see computeManualPosition for the model). */
-  net_deposited: number;
-  unrealized_pl: number;        // current_value − net_deposited
-  currency: string;             // currency of the latest UPDATE transaction
-  last_update_at: string | null;
-  update_count: number;         // number of UPDATE (snapshot) transactions
-}
-
-interface TxRow {
-  id: number;
-  kind: string;
-  units: number | null;
-  price_per_unit: number | null;
-  total_amount: number;
-  currency: string;
-  occurred_at: string;
-}
-
-interface UpdateRow {
-  id: number;
-  total_amount: number;
-  currency: string;
-  occurred_at: string;
-}
-
+// Sub-unit float noise guard (crypto fractions go deep).
 const EPSILON = 1e-10;
 
-// ── Core FIFO algorithm ───────────────────────────────────────────────────────
+/**
+ * Walk events chronologically, matching sells against the oldest open lots.
+ * Sells beyond available units are reported via `oversold_units` rather than
+ * throwing — a personal tracker should surface the mistake, not refuse to load.
+ */
+export function fifoPosition(events: LotEvent[]): FifoPosition {
+  const lots: OpenLot[] = [];
+  let realized_gain = 0;
+  let proceeds = 0;
+  let oversold_units = 0;
 
-function runFifo(txs: TxRow[]): {
-  lots: FifoLot[];
-  realized: { sell_tx_id: number; realized_pl: number; currency: string }[];
-  currency: string;
-  cost_only: number; // BUY amounts recorded without units (unpriceable tickers); valued at cost
-} {
-  const lots: FifoLot[] = [];
-  const realized: { sell_tx_id: number; realized_pl: number; currency: string }[] = [];
-  let currency = "NIS";
-  let cost_only = 0;
+  const ordered = [...events].sort((a, b) => a.occurred_on.localeCompare(b.occurred_on));
 
-  for (const tx of txs) {
-    if (tx.kind === "BUY" && tx.units != null && tx.price_per_unit != null && tx.units > 0) {
-      currency = tx.currency;
+  for (const e of ordered) {
+    if (e.quantity <= 0) continue;
+
+    if (e.kind === "buy") {
       lots.push({
-        tx_id: tx.id,
-        units_remaining: tx.units,
-        price_per_unit: tx.price_per_unit,
-        currency: tx.currency,
-        occurred_at: tx.occurred_at,
+        quantity: e.quantity,
+        price_per_unit: e.price_per_unit,
+        occurred_on: e.occurred_on,
       });
-    } else if (tx.kind === "BUY") {
-      // Cost-only BUY: an amount recorded without a usable unit/price (e.g. an
-      // Israeli/TASE fund with no live price). Tracked as cost basis and valued
-      // at cost — it just won't auto-update from a market price.
-      currency = tx.currency;
-      cost_only += tx.total_amount;
-    } else if (tx.kind === "SELL" && tx.units != null && tx.units > 0) {
-      currency = tx.currency;
-      const sellPrice =
-        tx.price_per_unit != null ? tx.price_per_unit : tx.total_amount / tx.units;
-      let unitsToSell = tx.units;
-      let realizedThisSell = 0;
-
-      while (unitsToSell > EPSILON && lots.length > 0) {
-        const lot = lots[0];
-        const deduct = Math.min(lot.units_remaining, unitsToSell);
-        realizedThisSell += deduct * (sellPrice - lot.price_per_unit);
-        lot.units_remaining -= deduct;
-        unitsToSell -= deduct;
-        if (lot.units_remaining < EPSILON) lots.shift();
-      }
-
-      realized.push({ sell_tx_id: tx.id, realized_pl: realizedThisSell, currency: tx.currency });
+      continue;
     }
-    // DIV, UPDATE, DEPOSIT: ignored by FIFO
-  }
 
-  return { lots, realized, currency, cost_only };
-}
+    // sell — consume oldest lots first
+    let remaining = e.quantity;
+    proceeds += e.quantity * e.price_per_unit;
 
-// ── Public API ────────────────────────────────────────────────────────────────
-
-/**
- * Read-only position snapshot. Does NOT write to the DB.
- * Use when you only need the derived numbers (e.g. for GET /api/investments).
- */
-export function computePosition(db: Database.Database, investmentId: number): PositionResult {
-  const txs = db
-    .prepare<[number], TxRow>(
-      `SELECT id, kind, units, price_per_unit, total_amount, currency, occurred_at
-       FROM transactions
-       WHERE investment_id = ? AND kind IN ('BUY','SELL')
-       ORDER BY occurred_at ASC, id ASC`
-    )
-    .all(investmentId);
-
-  const { lots, realized, currency, cost_only } = runFifo(txs);
-
-  const remaining_units = lots.reduce((s, l) => s + l.units_remaining, 0);
-  const lots_cost = lots.reduce((s, l) => s + l.units_remaining * l.price_per_unit, 0);
-  const cost_basis_remaining = lots_cost + cost_only;
-  const realized_pl_total = realized.reduce((s, r) => s + r.realized_pl, 0);
-
-  return {
-    remaining_units,
-    cost_basis_remaining,
-    cost_only_value: cost_only,
-    realized_pl_total,
-    currency,
-    lots,
-    is_closed: remaining_units < EPSILON && cost_only < EPSILON,
-  };
-}
-
-/**
- * Recompute realized_pl for every SELL in this investment, then persist to DB.
- * Call after any BUY / SELL create, edit, or delete to keep numbers consistent.
- * Returns per-SELL details so callers can update closed_at on the investment.
- */
-export function recomputeRealized(
-  db: Database.Database,
-  investmentId: number
-): RealizationDetail[] {
-  const txs = db
-    .prepare<[number], TxRow>(
-      `SELECT id, kind, units, price_per_unit, total_amount, currency, occurred_at
-       FROM transactions
-       WHERE investment_id = ? AND kind IN ('BUY','SELL')
-       ORDER BY occurred_at ASC, id ASC`
-    )
-    .all(investmentId);
-
-  const { lots, realized, cost_only } = runFifo(txs);
-
-  const updateStmt = db.prepare(
-    "UPDATE transactions SET realized_pl = ? WHERE id = ?"
-  );
-
-  const recomputeTx = db.transaction(() => {
-    for (const r of realized) {
-      updateStmt.run(r.realized_pl, r.sell_tx_id);
+    while (remaining > EPSILON && lots.length > 0) {
+      const lot = lots[0];
+      const taken = Math.min(lot.quantity, remaining);
+      realized_gain += taken * (e.price_per_unit - lot.price_per_unit);
+      lot.quantity -= taken;
+      remaining -= taken;
+      if (lot.quantity < EPSILON) lots.shift();
     }
-  });
-  recomputeTx();
-
-  const remaining = lots.reduce((s, l) => s + l.units_remaining, 0);
-  // A cost-only holding (amount recorded without units) is still open.
-  const isClosed = remaining < EPSILON && cost_only < EPSILON;
-
-  db.prepare(
-    `UPDATE investments SET closed_at = ? WHERE id = ?`
-  ).run(
-    isClosed ? new Date().toISOString() : null,
-    investmentId
-  );
-
-  return realized;
-}
-
-// ── Pension / Education / Other position ──────────────────────────────────────
-
-/**
- * Investment metadata needed to compute the manual position.
- * Matches columns in the investments table.
- */
-export interface ManualInvMeta {
-  type: string;
-  /** Expected monthly contribution in deposit_currency (pension only). */
-  monthly_deposit?: number | null;
-}
-
-/**
- * Compute the position for a non-market investment (pension / gemel /
- * education / money_market / other).
- *
- * Principal (net_deposited) model — one formula for all manual types:
- *
- *   pre     = SUM of DEPOSIT rows dated on/before the first UPDATE snapshot
- *             (historical deposits that explain how the opening balance arose)
- *   post    = SUM of DEPOSIT rows dated after the first UPDATE snapshot
- *   implied = monthly_deposit × whole calendar months since the first UPDATE
- *             (funds where contributions aren't logged individually)
- *
- *   net_deposited = (pre > 0 ? pre : opening balance) + post + implied
- *
- * So: if you logged the deposit history, P/L is lifetime (value − deposits);
- * otherwise the opening balance is treated as principal and P/L measures
- * growth since you started tracking — an opening balance is never profit.
- *
- *   current_value = latest UPDATE total_amount.
- *   unrealized_pl = current_value − net_deposited.
- */
-export function computeManualPosition(
-  db: Database.Database,
-  investmentId: number,
-  inv: ManualInvMeta
-): ManualPositionResult {
-  const updates = db
-    .prepare<[number], UpdateRow>(
-      `SELECT id, total_amount, currency, occurred_at
-       FROM transactions
-       WHERE investment_id = ? AND kind = 'UPDATE'
-       ORDER BY occurred_at ASC, id ASC`
-    )
-    .all(investmentId);
-
-  if (updates.length === 0) {
-    return {
-      current_value: 0,
-      net_deposited: 0,
-      unrealized_pl: 0,
-      currency: "NIS",
-      last_update_at: null,
-      update_count: 0,
-    };
+    if (remaining > EPSILON) oversold_units += remaining;
   }
 
-  const first = updates[0];
-  const last  = updates[updates.length - 1];
-  const current_value = last.total_amount;
-  const currency      = last.currency;
+  const quantity = lots.reduce((s, l) => s + l.quantity, 0);
+  const cost_basis = lots.reduce((s, l) => s + l.quantity * l.price_per_unit, 0);
 
-  const depositSums = db
-    .prepare<[string, string, number], { pre: number | null; post: number | null }>(
-      `SELECT
-         SUM(CASE WHEN occurred_at <= ? THEN total_amount END) AS pre,
-         SUM(CASE WHEN occurred_at >  ? THEN total_amount END) AS post
-       FROM transactions
-       WHERE investment_id = ? AND kind = 'DEPOSIT'`
-    )
-    .get(first.occurred_at, first.occurred_at, investmentId) as { pre: number | null; post: number | null };
-  const pre  = depositSums?.pre  ?? 0;
-  const post = depositSums?.post ?? 0;
-
-  let implied = 0;
-  const monthly = inv.monthly_deposit ?? 0;
-  if (monthly > 0) {
-    const firstDate = new Date(first.occurred_at);
-    const now = new Date();
-    const months = Math.max(
-      0,
-      (now.getFullYear() - firstDate.getFullYear()) * 12
-        + (now.getMonth() - firstDate.getMonth())
-    );
-    implied = monthly * months;
-  }
-
-  const net_deposited = (pre > 0 ? pre : first.total_amount) + post + implied;
-
-  return {
-    current_value,
-    net_deposited,
-    unrealized_pl: current_value - net_deposited,
-    currency,
-    last_update_at: last.occurred_at,
-    update_count: updates.length,
-  };
+  return { quantity, cost_basis, realized_gain, proceeds, lots, oversold_units };
 }

@@ -1,33 +1,35 @@
 /**
- * Portfolio snapshot helper.
- * Captures current portfolio value into portfolio_snapshots.
- * Called on every BUY/SELL/UPDATE transaction and by the daily cron job.
+ * Daily portfolio snapshot.
+ *
+ * The history chart does NOT depend on these rows — /api/portfolio/history
+ * recomputes the decomposition from the ledger on demand, so back-dating an
+ * entry corrects the past instead of leaving a stale series behind. Snapshots
+ * are a cheap audit trail: what the numbers looked like on a given day, with
+ * the prices and FX rates that were entered at the time.
  */
 
 import type Database from "better-sqlite3";
-import { computePortfolio } from "./portfolio.js";
-import { getRateSync } from "./fx.js";
+import { computePortfolio, today, type Currency } from "./valuation.js";
 
-export function takeSnapshot(db: Database.Database, userId: number): void {
+export function takeSnapshot(db: Database.Database, userId: number, on: string = today()): void {
   try {
-    const summary = computePortfolio(db, userId);
-    const fx = getRateSync(db, userId);
-    const total_value_usd = fx.rate > 0 ? summary.total_value_nis / fx.rate : 0;
-    const total_net_deposited_usd = fx.rate > 0 ? summary.total_net_deposited_nis / fx.rate : 0;
+    const user = db.prepare("SELECT display_currency FROM users WHERE id = ?")
+      .get(userId) as { display_currency: Currency } | undefined;
+    const ccy: Currency = user?.display_currency === "USD" ? "USD" : "ILS";
+
+    const p = computePortfolio(db, userId, ccy, on);
 
     db.prepare(
       `INSERT INTO portfolio_snapshots
-         (user_id, total_value_nis, total_value_usd, total_net_deposited_nis, total_net_deposited_usd)
-       VALUES (?, ?, ?, ?, ?)`
-    ).run(
-      userId,
-      summary.total_value_nis,
-      total_value_usd,
-      summary.total_net_deposited_nis,
-      total_net_deposited_usd
-    );
+         (user_id, currency, value, principal, gross_earnings, fees, snapshot_on)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(user_id, snapshot_on) DO UPDATE SET
+         currency = excluded.currency, value = excluded.value,
+         principal = excluded.principal, gross_earnings = excluded.gross_earnings,
+         fees = excluded.fees`
+    ).run(userId, ccy, p.value, p.principal, p.gross_earnings, p.fees, on);
   } catch (err) {
-    // Snapshots are best-effort — never crash a transaction for this
-    console.error("Snapshot error for user", userId, (err as Error).message);
+    // Snapshots are best-effort bookkeeping — never fail a user action for one.
+    console.error("[snapshot] user", userId, (err as Error).message);
   }
 }

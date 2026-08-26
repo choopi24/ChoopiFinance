@@ -14,11 +14,9 @@ const BCRYPT_ROUNDS = 12;
 
 type UserRow = {
   display_currency: string;
-  fx_override: number | null;
   theme: string;
   display_name: string | null;
   stay_signed_in: number;
-  show_on_lock_screen: number;
 };
 
 // GET /api/settings
@@ -27,39 +25,11 @@ settingsRouter.get("/", (req, res) => {
     const db = getDb();
     const user = db
       .prepare<[number], UserRow>(
-        `SELECT display_currency, fx_override, theme, display_name,
-                stay_signed_in, show_on_lock_screen
+        `SELECT display_currency, theme, display_name, stay_signed_in
          FROM users WHERE id = ?`
       )
       .get(req.user!.id);
     ok(res, user ?? {});
-  } catch (e) {
-    fail(res, (e as Error).message, 500);
-  }
-});
-
-// PATCH /api/settings/fx-override — set or clear manual FX rate
-settingsRouter.patch("/fx-override", (req, res) => {
-  try {
-    const db = getDb();
-    const { rate } = req.body as { rate: number | null | undefined };
-
-    if (rate !== null && rate !== undefined) {
-      const n = Number(rate);
-      if (isNaN(n) || n <= 0 || n > 100) {
-        return fail(res, "rate must be a positive number (e.g. 3.72)");
-      }
-      db.prepare("UPDATE users SET fx_override = ? WHERE id = ?").run(n, req.user!.id);
-    } else {
-      db.prepare("UPDATE users SET fx_override = NULL WHERE id = ?").run(req.user!.id);
-    }
-
-    const updated = db
-      .prepare<[number], { display_currency: string; fx_override: number | null }>(
-        "SELECT display_currency, fx_override FROM users WHERE id = ?"
-      )
-      .get(req.user!.id);
-    ok(res, updated);
   } catch (e) {
     fail(res, (e as Error).message, 500);
   }
@@ -70,8 +40,8 @@ settingsRouter.patch("/display-currency", (req, res) => {
   try {
     const db = getDb();
     const { currency } = req.body as { currency?: string };
-    if (currency !== "NIS" && currency !== "USD") {
-      return fail(res, "currency must be NIS or USD");
+    if (currency !== "ILS" && currency !== "USD") {
+      return fail(res, "currency must be ILS or USD");
     }
     db.prepare("UPDATE users SET display_currency = ? WHERE id = ?").run(currency, req.user!.id);
     ok(res, { display_currency: currency });
@@ -145,10 +115,7 @@ settingsRouter.patch("/password", async (req, res) => {
 settingsRouter.patch("/preferences", (req, res) => {
   try {
     const db = getDb();
-    const { stay_signed_in, show_on_lock_screen } = req.body as {
-      stay_signed_in?: boolean;
-      show_on_lock_screen?: boolean;
-    };
+    const { stay_signed_in } = req.body as { stay_signed_in?: boolean };
 
     const updates: string[] = [];
     const values: unknown[] = [];
@@ -156,10 +123,6 @@ settingsRouter.patch("/preferences", (req, res) => {
     if (stay_signed_in !== undefined) {
       updates.push("stay_signed_in = ?");
       values.push(stay_signed_in ? 1 : 0);
-    }
-    if (show_on_lock_screen !== undefined) {
-      updates.push("show_on_lock_screen = ?");
-      values.push(show_on_lock_screen ? 1 : 0);
     }
     if (updates.length === 0) return fail(res, "No preferences to update");
 
@@ -182,7 +145,7 @@ settingsRouter.post("/snapshot", (req, res) => {
   }
 });
 
-// GET /api/settings/export — full JSON backup of user's ledger (schema_version 2)
+// GET /api/settings/export — full JSON backup of your ledger (schema_version 3)
 settingsRouter.get("/export", (req, res) => {
   try {
     const db = getDb();
@@ -196,7 +159,7 @@ settingsRouter.get("/export", (req, res) => {
   }
 });
 
-// POST /api/settings/import — restore a JSON export (schema_version 1 or 2).
+// POST /api/settings/import — restore a JSON export (schema_version 3).
 // Takes a native DB backup first, then replaces the user's rows in one
 // transaction with full id remapping. Other users' rows are untouched.
 settingsRouter.post("/import", async (req, res) => {
@@ -217,7 +180,7 @@ settingsRouter.post("/import", async (req, res) => {
   }
 });
 
-// DELETE /api/settings/data — wipe all investments + transactions (keeps user account)
+// DELETE /api/settings/data — wipe the whole ledger (keeps your login)
 settingsRouter.delete("/data", (req, res) => {
   try {
     const db = getDb();
@@ -229,8 +192,12 @@ settingsRouter.delete("/data", (req, res) => {
     }
 
     db.transaction(() => {
-      db.prepare("DELETE FROM transactions WHERE user_id = ?").run(uid);
-      db.prepare("DELETE FROM investments WHERE user_id = ?").run(uid);
+      db.prepare("DELETE FROM rsu_grants WHERE user_id = ?").run(uid);
+      db.prepare("DELETE FROM deposit_rules WHERE user_id = ?").run(uid);
+      db.prepare("DELETE FROM entries WHERE user_id = ?").run(uid);
+      db.prepare("DELETE FROM accounts WHERE user_id = ?").run(uid);
+      db.prepare("DELETE FROM price_points WHERE user_id = ?").run(uid);
+      db.prepare("DELETE FROM fx_rates WHERE user_id = ?").run(uid);
       db.prepare("DELETE FROM portfolio_snapshots WHERE user_id = ?").run(uid);
     })();
 
