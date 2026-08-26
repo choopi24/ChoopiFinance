@@ -19,8 +19,7 @@
     "express-rate-limit": "^8.5.2",
     "helmet": "^8.2.0",
     "jsonwebtoken": "^9.0.2",
-    "node-cron": "^4.2.1",
-    "yahoo-finance2": "^3.14.1"
+    "node-cron": "^4.2.1"
   },
   "devDependencies": {
     "@types/bcrypt": "^5.0.2",
