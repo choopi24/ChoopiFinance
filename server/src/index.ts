@@ -16,17 +16,13 @@ import { investmentsRouter } from "./routes/investments.js";
 import { transactionsRouter } from "./routes/transactions.js";
 import { portfolioRouter } from "./routes/portfolio.js";
 import { realizedRouter } from "./routes/realized.js";
-import { pricesRouter } from "./routes/prices.js";
 import { fxRouter } from "./routes/fx.js";
 import { settingsRouter } from "./routes/settings.js";
-import { lookupRouter } from "./routes/lookup.js";
 import { csvRouter } from "./routes/csv.js";
 import { searchRouter } from "./routes/search.js";
-import { ilFundsRouter } from "./routes/ilFunds.js";
 import { rsuRouter } from "./routes/rsu.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { takeSnapshot } from "./services/snapshot.js";
-import { getRate } from "./services/fx.js";
 import { runBackup, hasRecentBackup } from "./services/backup.js";
 
 const app = express();
@@ -48,14 +44,10 @@ app.use(cookieParser());
 // Initialise DB + run migrations on startup
 getDb();
 
-// Warm the FX cache on boot (best-effort, non-blocking), then backfill missed
-// daily snapshots — the 02:00 cron never fires on a machine that sleeps at
-// night, so on boot snapshot any user without one in the last 20 hours.
-getRate(getDb()).then(r => {
-  console.log(`FX cache warm  →  1 USD = ${r.rate.toFixed(4)} NIS (${r.source})`);
-}).catch(() => {
-  console.warn("FX warm-up skipped (Frankfurter unreachable, will retry on first request)");
-}).finally(() => {
+// Backfill missed daily snapshots — the 02:00 cron never fires on a machine
+// that sleeps at night, so on boot snapshot any user without one in the last
+// 20 hours. (The FX warm-up that used to run here is gone with the provider.)
+{
   const db = getDb();
   const cutoff = new Date(Date.now() - 20 * 60 * 60 * 1000).toISOString();
   const users = db.prepare(
@@ -76,7 +68,7 @@ getRate(getDb()).then(r => {
       .then(r => console.log(`[backup] ${r.file}${r.pruned.length ? ` (pruned ${r.pruned.length})` : ""}`))
       .catch(err => console.error("[backup] boot backup failed:", (err as Error).message));
   }
-});
+}
 
 // Routes
 app.get("/api/health", (_req, res) => {
@@ -89,13 +81,10 @@ app.use("/api/investments",  investmentsRouter);
 app.use("/api/transactions", transactionsRouter);
 app.use("/api/portfolio",    portfolioRouter);
 app.use("/api/realized",     realizedRouter);
-app.use("/api/prices",       pricesRouter);
 app.use("/api/fx",           fxRouter);
 app.use("/api/settings",     settingsRouter);
-app.use("/api/lookup",       lookupRouter);
 app.use("/api/csv",          csvRouter);
 app.use("/api/search",       searchRouter);
-app.use("/api/il-funds",     ilFundsRouter);
 app.use("/api/rsu",          rsuRouter);
 
 app.use(errorHandler);

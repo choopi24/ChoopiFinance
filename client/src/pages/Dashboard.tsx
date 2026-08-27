@@ -3,7 +3,6 @@ import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../hooks/useTheme";
 import { useCurrency } from "../hooks/useCurrency";
 import { usePortfolio, toDisplayCurrency, FALLBACK_FX_USD_NIS } from "../hooks/usePortfolio";
-import { usePrices } from "../hooks/usePrices";
 import { useFxRate } from "../hooks/useFxRate";
 import { useRecentTransactions } from "../hooks/useTransactions";
 import { AppShell } from "../components/AppShell";
@@ -29,7 +28,6 @@ export default function Dashboard() {
   const { user, logout } = useAuth();
   const [theme, toggleTheme] = useTheme();
   const [currency, setCurrency] = useCurrency();
-  const { refresh, isRefreshing, lastSync } = usePrices();
   const { data: fx } = useFxRate();
   const { data: portfolio, isLoading: portfolioLoading } = usePortfolio();
   const { data: recentTxs = [] } = useRecentTransactions(5);
@@ -69,7 +67,7 @@ export default function Dashboard() {
 
   // ── FX label for KpiHero ─────────────────────────────────────────────────
   const fxLabel = fx
-    ? `${fx.source === "override" ? "manual" : "Frankfurter"} · 1 USD = ₪${fxRate.toFixed(3)}`
+    ? `${fx.source === "fallback" ? "default rate" : "manual"} · 1 USD = ₪${fxRate.toFixed(3)}`
     : undefined;
 
   // ── Greeting ─────────────────────────────────────────────────────────────
@@ -89,9 +87,6 @@ export default function Dashboard() {
       onLogout={logout}
       greeting={greeting}
       onAdd={() => setAddOpen(true)}
-      onRefresh={refresh}
-      isRefreshing={isRefreshing}
-      lastSync={lastSync}
     >
       {/* Loading state */}
       {portfolioLoading && (

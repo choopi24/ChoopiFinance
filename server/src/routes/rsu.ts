@@ -214,7 +214,7 @@ rsuRouter.post("/", async (req, res) => {
 
     // Materialize anything already due (fetches historical FMVs — best-effort).
     const grant = loadGrant(db, grantId, req.user!.id)!;
-    await materializeDueEvents(db, grant);
+    materializeDueEvents(db, grant);
     takeSnapshot(db, req.user!.id);
 
     ok(res, grantPayload(db, grant, req.user!.id), 201);
@@ -273,7 +273,7 @@ rsuRouter.patch("/events/:eventId", async (req, res) => {
 
     const updated = db.prepare("SELECT * FROM rsu_vesting_events WHERE id = ?").get(eventId) as VestingEventRow;
     syncEventTransaction(db, updated, grant.investment_id);       // vested → update/unvest the BUY
-    await materializeDueEvents(db, grant);                        // scheduled + now due + has FMV → vest
+    materializeDueEvents(db, grant);                        // scheduled + now due + has FMV → vest
     takeSnapshot(db, req.user!.id);
 
     ok(res, grantPayload(db, loadGrant(db, grant.id, req.user!.id)!, req.user!.id));
@@ -393,7 +393,7 @@ rsuRouter.post("/:id/refresh", async (req, res) => {
     const db = getDb();
     const grant = loadGrant(db, Number(req.params.id), req.user!.id);
     if (!grant) return fail(res, "Grant not found", 404);
-    const result = await materializeDueEvents(db, grant);
+    const result = materializeDueEvents(db, grant);
     if (result.vested > 0) takeSnapshot(db, req.user!.id);
     ok(res, { ...result, ...grantPayload(db, grant, req.user!.id) });
   } catch (e) {
@@ -426,7 +426,7 @@ rsuRouter.post("/:id/events", async (req, res) => {
     db.prepare("UPDATE rsu_grants SET total_units = total_units + ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?")
       .run(u.value, grant.id);
 
-    await materializeDueEvents(db, grant);
+    materializeDueEvents(db, grant);
     ok(res, grantPayload(db, loadGrant(db, grant.id, req.user!.id)!, req.user!.id), 201);
   } catch (e) {
     fail(res, (e as Error).message, 500);

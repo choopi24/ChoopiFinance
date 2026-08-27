@@ -4,8 +4,6 @@ import { requireAuth } from "../middleware/requireAuth.js";
 import { ok, fail } from "../middleware/respond.js";
 import { recomputeRealized } from "../services/fifo.js";
 import { takeSnapshot } from "../services/snapshot.js";
-import { refreshPrice } from "../services/prices.js";
-import { getRateSync } from "../services/fx.js";
 import { validateTransactionPatch } from "./editValidation.js";
 
 export const transactionsRouter = Router();
@@ -96,45 +94,16 @@ transactionsRouter.post("/", async (req, res) => {
       effectiveTotal = u * pUnit;
     }
 
-    // ── Derive missing position fields from the live price (market BUY) ──────
-    // Two convenience entry modes, so the user need not know the share count:
-    //   • amount-only  ("$5,000 in VOO")  → units  = amount / live price
-    //   • units-only   ("10 shares, cost unknown") → cost = units * live price
-    // Either way the position then tracks the live market like any FIFO holding.
+    // Amount-only entry ("I put 5,000 into VOO") is recorded AT COST: units and
+    // price stay null and the amount becomes the cost basis. Deriving units from
+    // a live price is gone with the price providers — enter units + price yourself
+    // if you want unit-level tracking.
     const amountOnly = u == null && pUnit == null && effectiveTotal != null && effectiveTotal > 0;
     const unitsOnly  = u != null && u > 0 && pUnit == null && effectiveTotal == null;
-    if (isMarket && kind === "BUY" && (amountOnly || unitsOnly)) {
-      const pr = await refreshPrice(db, Number(investment_id));
-      if (pr && pr.price > 0) {
-        pUnit = pr.price;
-        if (amountOnly) {
-          // Convert the entered amount into the asset's native currency if they differ (NIS/USD only).
-          let amtNative = effectiveTotal as number;
-          if (txCurrency !== pr.currency) {
-            const rate = getRateSync(db, req.user!.id).rate; // USD→NIS
-            if (txCurrency === "NIS" && pr.currency === "USD") amtNative = (effectiveTotal as number) / rate;
-            else if (txCurrency === "USD" && pr.currency === "NIS") amtNative = (effectiveTotal as number) * rate;
-          }
-          u = amtNative / pr.price;
-          effectiveTotal = amtNative;
-        } else {
-          // units-only: cost basis = units * live native price
-          effectiveTotal = (u as number) * pr.price;
-        }
-        txCurrency = pr.currency;
-      } else if (amountOnly) {
-        // No live price (e.g. an Israeli/TASE fund not covered by the data sources).
-        // Record the holding at cost: keep units/price null and store the entered
-        // amount as the cost basis. It shows your money invested and is valued at
-        // cost — it just won't auto-update from a market price.
-        u = null;
-        pUnit = null;
-        // effectiveTotal and txCurrency stay as entered.
-      } else {
-        // units-only with no price: we can't value the units without a price.
-        return fail(res, "Couldn't fetch a live price to value these units — add the amount you paid instead, or try again shortly.");
-      }
+    if (isMarket && kind === "BUY" && unitsOnly) {
+      return fail(res, "Enter the price per unit (or the total amount you paid) — there is no price source to value these units for you.");
     }
+    void amountOnly; // recorded at cost as entered
 
     if (effectiveTotal == null || isNaN(effectiveTotal)) {
       return fail(res, "total_amount or (units + price_per_unit) required");

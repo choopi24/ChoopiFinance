@@ -76,52 +76,10 @@ export function useInvestments(includeClosed = false) {
   });
 }
 
-export interface SymbolHit {
-  symbol: string;
-  name: string;
-  type: "stock" | "etf" | "crypto";
-  currency: string | null;
-  exchange: string | null;
-}
-
-/** Typeahead search for tickers/coins (autocomplete in the add form). */
-export function useSymbolSearch(query: string, type: string, enabled: boolean) {
-  return useQuery<SymbolHit[]>({
-    queryKey: ["lookup", "search", type, query],
-    queryFn: () =>
-      api.get<ApiOk<SymbolHit[]>>(
-        `/lookup/search?q=${encodeURIComponent(query)}&type=${type}`
-      ).then(r => r.data),
-    enabled: enabled && query.trim().length >= 2,
-    staleTime: 60_000,
-  });
-}
-
-export interface IlFundHit {
-  fund_id: number;
-  name: string;
-  classification: string | null;
-  managing_corporation: string | null;
-  latest_period: number;
-  monthly_yield: number | null;
-  year_to_date_yield: number | null;
-  avg_annual_yield_5yrs: number | null;
-  avg_annual_mgmt_fee: number | null;
-  avg_deposit_fee: number | null;
-}
-
-/** Typeahead over the regulator's Gemel-Net / Pensia-Net datasets (Hebrew names). */
-export function useIlFundSearch(query: string, type: string, enabled: boolean) {
-  return useQuery<IlFundHit[]>({
-    queryKey: ["il-funds", "search", type, query],
-    queryFn: () =>
-      api.get<ApiOk<IlFundHit[]>>(
-        `/il-funds/search?q=${encodeURIComponent(query)}&type=${type}`
-      ).then(r => r.data),
-    enabled: enabled && query.trim().length >= 2,
-    staleTime: 10 * 60_000,
-  });
-}
+/**
+ * Symbol / fund typeahead was removed with the price + fund providers — there is
+ * no source to search. Symbols are typed in by hand.
+ */
 
 export function useCheckExisting(ticker: string, type: string, enabled: boolean) {
   return useQuery<ExistingCheck | null>({

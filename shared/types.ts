@@ -55,7 +55,7 @@ export interface Investment {
   expected_annual_return?: number | null;
   /** Recurring monthly contribution used in future-value projection. null/0 = none. */
   monthly_contribution?: number | null;
-  /** Gemel-Net / Pensia-Net fund id (Israeli regulated funds). */
+  /** Legacy fund id column (the regulator data source was removed). */
   fund_id?: number | null;
   /** Fund track name (מסלול), e.g. "מסלול מניות". */
   fund_track?: string | null;

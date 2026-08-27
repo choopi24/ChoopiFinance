@@ -266,7 +266,7 @@ describe("P&L gating — precision + portfolio aggregate (regression)", () => {
   });
 });
 
-describe("enrichInvestment — Israeli fund estimated value (Gemel-Net yields)", () => {
+describe("enrichInvestment — manual fund value is exactly the entered balance", () => {
   let db: Database.Database;
   beforeEach(() => { db = makeDb(); setRate(db, 4); });
 
@@ -278,43 +278,9 @@ describe("enrichInvestment — Israeli fund estimated value (Gemel-Net yields)",
     return db.prepare("SELECT * FROM investments WHERE id = ?").get(r.lastInsertRowid);
   }
 
-  function cacheYield(fundId: number, period: number, y: number): void {
-    db.prepare(
-      `INSERT OR REPLACE INTO il_fund_cache (dataset, fund_id, period, monthly_yield, fetched_at)
-       VALUES ('gemel', ?, ?, ?, ?)`
-    ).run(fundId, period, y, new Date().toISOString());
-  }
-
   const fx = { rate: 4, source: "cached" as const };
 
-  it("grows the last balance by cached yields + deposits − fees, flags estimate", () => {
-    // Balance snapshot 2 whole months ago; yields published for both months.
-    const d = new Date();
-    d.setMonth(d.getMonth() - 2);
-    const row = makeGemel(964);
-    db.prepare(
-      `INSERT INTO transactions (investment_id, user_id, kind, total_amount, currency, occurred_at)
-       VALUES (?, 1, 'UPDATE', 100000, 'NIS', ?)`
-    ).run(row.id, d.toISOString());
-
-    const p = (m: number) => {
-      const t = new Date(); t.setMonth(t.getMonth() - m);
-      return t.getFullYear() * 100 + t.getMonth() + 1;
-    };
-    cacheYield(964, p(1), 1.0);
-    cacheYield(964, p(0), 0.5);
-
-    const e = enrichInvestment(db, row, fx);
-    expect(e.value_estimated).toBe(true);
-    expect(e.last_reported_balance_nis).toBe(100_000);
-    const feeM = 1 - 0.012 / 12;
-    const expected = ((100_000 * 1.01 * feeM + 1000) * 1.005 * feeM) + 1000;
-    expect(e.current_value_nis).toBeCloseTo(expected, 4);
-    // P/L stays sane: principal = opening 100k + 2 implied monthly deposits.
-    expect(e.net_deposited_nis).toBe(102_000);
-  });
-
-  it("no fund_id → plain manual behaviour, no estimate flag", () => {
+  it("a fund is never valued above the balance you entered", () => {
     const row = makeGemel(null);
     db.prepare(
       `INSERT INTO transactions (investment_id, user_id, kind, total_amount, currency, occurred_at)

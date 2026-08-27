@@ -16,7 +16,6 @@
 
 import type Database from "better-sqlite3";
 import { recomputeRealized } from "./fifo.js";
-import { getQuote } from "./quote.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -171,19 +170,6 @@ export interface GrantRow {
   currency: string;
 }
 
-/** Injectable historical-quote lookup (defaults to the Yahoo-backed quote service). */
-export type FmvFetcher = (symbol: string, dateIso: string) =>
-  Promise<{ price: number; currency: string } | null>;
-
-const defaultFmvFetcher: FmvFetcher = async (symbol, dateIso) => {
-  try {
-    const q = await getQuote(symbol, "stock", dateIso);
-    return { price: q.price, currency: q.currency };
-  } catch {
-    return null; // FMV stays null — user can enter it manually
-  }
-};
-
 export interface MaterializeResult {
   vested: number;        // events materialized this run
   needs_fmv: number;     // due events still waiting for a cost basis
@@ -195,12 +181,11 @@ export interface MaterializeResult {
  * fetch fails the event stays 'scheduled' (flagged needs_fmv) until the user
  * enters a value or a later refresh succeeds. Never throws on fetch errors.
  */
-export async function materializeDueEvents(
+export function materializeDueEvents(
   db: Database.Database,
   grant: GrantRow,
-  fetchFmv: FmvFetcher = defaultFmvFetcher,
   today: string = new Date().toISOString().slice(0, 10)
-): Promise<MaterializeResult> {
+): MaterializeResult {
   const due = db
     .prepare<[number, string], VestingEventRow>(
       `SELECT * FROM rsu_vesting_events
@@ -213,16 +198,10 @@ export async function materializeDueEvents(
   let needs_fmv = 0;
 
   for (const event of due) {
-    let fmv = event.fmv_at_vest;
-    let ccy = grant.currency;
-
-    if (fmv == null) {
-      const fetched = await fetchFmv(grant.symbol, event.vest_date.slice(0, 10));
-      if (fetched && fetched.price > 0) {
-        fmv = fetched.price;
-        if (fetched.currency === "NIS" || fetched.currency === "USD") ccy = fetched.currency;
-      }
-    }
+    // FMV is manual-only now: no source can look up a historical close, so an
+    // event without one stays scheduled and is reported via needs_fmv.
+    const fmv = event.fmv_at_vest;
+    const ccy = grant.currency;
 
     if (fmv == null || fmv <= 0) {
       needs_fmv++;

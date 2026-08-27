@@ -8,7 +8,8 @@ export const fxRouter = Router();
 fxRouter.use(requireAuth);
 
 // GET /api/fx/rate?from=USD&to=NIS
-// Returns current rate, refreshing from Frankfurter if stale (>15 min).
+// Returns the stored USD→NIS rate (manual override, then fx_cache, then fallback).
+// Nothing refreshes it from a provider any more.
 fxRouter.get("/rate", async (req, res) => {
   try {
     const from = ((req.query.from as string) ?? "USD").toUpperCase();

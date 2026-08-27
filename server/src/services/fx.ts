@@ -1,17 +1,23 @@
 /**
- * FX rate service — USD/NIS via Frankfurter (free, no key).
- * 15-minute TTL cached in fx_cache table.
- * User-level manual override stored in users.fx_override takes precedence.
+ * FX conversion — LOCAL ONLY. No provider, no network.
  *
- * Frankfurter uses "ILS" (ISO 4217) for the Israeli Shekel; we normalise to
- * the app's internal "NIS" label on the way in/out.
+ * Rates are read from the fx_cache table, which is now written by hand rather
+ * than by a feed (the Frankfurter integration was removed). Conversion helpers
+ * and call signatures are unchanged so every consumer keeps working.
+ *
+ * Interim behaviour until manual FX entry lands with the new schema: with no row
+ * in fx_cache, callers get FALLBACK_USD_NIS and `source: "fallback"`, which the
+ * client already surfaces as an approximation. A dated rate series with
+ * carry-forward replaces this in the schema step.
+ *
+ * The app internally labels the shekel "NIS"; a rename to ISO "ILS" belongs to
+ * the schema step, not here.
  */
 
 import type Database from "better-sqlite3";
 
-const FX_TTL_MS = 15 * 60 * 1_000;
+/** Used only when no rate has been entered yet. Flagged as `source: "fallback"`. */
 export const FALLBACK_USD_NIS = 3.7;
-const FRANKFURTER_URL = "https://api.frankfurter.app/latest?from=USD&to=ILS";
 
 /** Convert a native amount to NIS using a USD→NIS rate. NIS passes through. */
 export function toNis(amount: number, currency: string, usdNis: number): number {
@@ -25,101 +31,19 @@ export interface FxResult {
   override: number | null;
 }
 
-// ── Internal: fetch from Frankfurter and update cache ────────────────────────
-
-async function fetchAndCache(db: Database.Database): Promise<number> {
-  const resp = await fetch(FRANKFURTER_URL, { signal: AbortSignal.timeout(8_000) });
-  if (!resp.ok) throw new Error(`Frankfurter HTTP ${resp.status}`);
-  const json = await resp.json() as { rates?: { ILS?: number } };
-  const rate = json.rates?.ILS;
-  if (!rate || typeof rate !== "number") throw new Error("Unexpected Frankfurter response");
-
-  const now = new Date().toISOString();
-  db.prepare(
-    `INSERT OR REPLACE INTO fx_cache (pair, rate, fetched_at) VALUES ('USD_NIS', ?, ?)`
-  ).run(rate, now);
-
-  return rate;
-}
-
-// ── Check if cache is fresh ──────────────────────────────────────────────────
-
-function getCached(db: Database.Database): { rate: number; fetched_at: string } | null {
-  const row = db
-    .prepare<[], { rate: number; fetched_at: string }>(
-      "SELECT rate, fetched_at FROM fx_cache WHERE pair = 'USD_NIS'"
-    )
-    .get();
-  if (!row) return null;
-  const age = Date.now() - new Date(row.fetched_at).getTime();
-  return age < FX_TTL_MS ? row : null; // null = stale
-}
-
-// ── Public API ────────────────────────────────────────────────────────────────
-
 /**
- * Return USD→NIS rate. Checks in order:
- *   1. User's manual override (if userId provided)
- *   2. Fresh cache (< 15 min)
- *   3. Fetch Frankfurter and cache
- *   4. Stale cache (better than fallback)
- *   5. Hardcoded fallback
+ * Resolve the USD→NIS rate from local data only, in order:
+ *   1. the user's manual override (users.fx_override)
+ *   2. the stored fx_cache row (no staleness check — a hand-entered rate does
+ *      not expire, and there is nothing to refresh it from)
+ *   3. FALLBACK_USD_NIS
  */
-export async function getRate(
-  db: Database.Database,
-  userId?: number
-): Promise<FxResult> {
-  // 1. User override
+export function getRateSync(db: Database.Database, userId?: number): FxResult {
   if (userId != null) {
     const user = db
       .prepare<[number], { fx_override: number | null }>(
         "SELECT fx_override FROM users WHERE id = ?"
       )
-      .get(userId);
-    if (user?.fx_override != null) {
-      return {
-        rate: user.fx_override,
-        source: "override",
-        fetched_at: null,
-        override: user.fx_override,
-      };
-    }
-  }
-
-  // 2. Fresh cache
-  const cached = getCached(db);
-  if (cached) {
-    return { rate: cached.rate, source: "cached", fetched_at: cached.fetched_at, override: null };
-  }
-
-  // 3. Fetch live
-  try {
-    const rate = await fetchAndCache(db);
-    const fetched_at = new Date().toISOString();
-    return { rate, source: "cached", fetched_at, override: null };
-  } catch {
-    // 4. Stale cache fallback
-    const stale = db
-      .prepare<[], { rate: number; fetched_at: string }>(
-        "SELECT rate, fetched_at FROM fx_cache WHERE pair = 'USD_NIS'"
-      )
-      .get();
-    if (stale) return { rate: stale.rate, source: "cached", fetched_at: stale.fetched_at, override: null };
-
-    // 5. Hardcoded
-    return { rate: FALLBACK_USD_NIS, source: "fallback", fetched_at: null, override: null };
-  }
-}
-
-/**
- * Synchronous version — for portfolio computations that can't be async.
- * Reads cache only (no network call). Falls back to hardcoded 3.7.
- * Call getRate() first to warm the cache.
- */
-export function getRateSync(db: Database.Database, userId?: number): FxResult {
-  if (userId != null) {
-    const user = db
-      .prepare<[number], { fx_override: number | null }>("SELECT fx_override FROM users WHERE id = ?")
       .get(userId);
     if (user?.fx_override != null) {
       return { rate: user.fx_override, source: "override", fetched_at: null, override: user.fx_override };
@@ -131,7 +55,26 @@ export function getRateSync(db: Database.Database, userId?: number): FxResult {
       "SELECT rate, fetched_at FROM fx_cache WHERE pair = 'USD_NIS'"
     )
     .get();
+
   return row
     ? { rate: row.rate, source: "cached", fetched_at: row.fetched_at, override: null }
     : { rate: FALLBACK_USD_NIS, source: "fallback", fetched_at: null, override: null };
+}
+
+/**
+ * Async wrapper kept so existing callers (routes/fx.ts) need no change. There is
+ * nothing to await any more — it simply defers to the synchronous local read.
+ */
+export async function getRate(db: Database.Database, userId?: number): Promise<FxResult> {
+  return getRateSync(db, userId);
+}
+
+/**
+ * Record a USD→NIS rate manually. The only writer of fx_cache now that the
+ * provider is gone.
+ */
+export function setRate(db: Database.Database, rate: number): void {
+  db.prepare(
+    "INSERT OR REPLACE INTO fx_cache (pair, rate, fetched_at) VALUES ('USD_NIS', ?, ?)"
+  ).run(rate, new Date().toISOString());
 }

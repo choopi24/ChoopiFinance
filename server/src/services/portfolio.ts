@@ -17,7 +17,6 @@
 import type Database from "better-sqlite3";
 import { computePosition, computeManualPosition } from "./fifo.js";
 import { getRateSync, toNis } from "./fx.js";
-import { datasetForType, estimateFromCache } from "./israelFunds.js";
 
 const MARKET_TYPES = new Set(["crypto", "stock", "etf", "rsu"]);
 const STALE_30 = 30;
@@ -113,7 +112,7 @@ export interface EnrichedInvestment {
   stale_level: "stale-30" | "stale-60" | null;
   update_count: number;
 
-  // Israeli fund estimate (Gemel-Net/Pensia-Net published yields)
+  // Retained for API shape; always false now that the yield estimator is gone.
   /** True when current_value_nis was grown forward from the last manual balance. */
   value_estimated: boolean;
   /** The last manually-entered balance in NIS (estimate baseline). */
@@ -234,22 +233,11 @@ export function enrichInvestment(
       monthly_deposit: inv.monthly_deposit,
     });
 
-    // Israeli regulated funds: grow the last manual balance forward using the
-    // regulator's published monthly track yields + contributions − fees.
-    let current_value_native = man.current_value;
-    let value_estimated = false;
-    const dataset = datasetForType(inv.type);
-    if (dataset && inv.fund_id != null && man.last_update_at != null) {
-      const est = estimateFromCache(
-        db, dataset, inv.fund_id,
-        man.current_value, man.last_update_at,
-        inv.monthly_deposit, inv.fee_deposit_pct, inv.fee_balance_pct
-      );
-      if (est) {
-        current_value_native = est.value;
-        value_estimated = true;
-      }
-    }
+    // Value is exactly the last balance you entered. The regulator-yield
+    // estimator (data.gov.il) that used to grow it forward has been removed —
+    // nothing infers a value you didn't type.
+    const current_value_native = man.current_value;
+    const value_estimated = false;
 
     const current_value_nis = toNis(current_value_native, man.currency, fx.rate);
     // cost_basis = net deposited, converted to NIS

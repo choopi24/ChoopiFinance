@@ -169,15 +169,13 @@ describe("materializeDueEvents", () => {
   let db: Database.Database;
   beforeEach(() => { db = makeDb(); });
 
-  it("due events become BUY lots; future events stay scheduled", async () => {
+  it("due events with an entered FMV become BUY lots; future events stay scheduled", () => {
     const grant = seedGrant(db);
-    addEvent(db, grant.id, "2025-06-01", 100, 50);   // due, has FMV
-    addEvent(db, grant.id, "2026-06-01", 100, null); // due, FMV via fetch
+    addEvent(db, grant.id, "2025-06-01", 100, 50);   // due, FMV entered
+    addEvent(db, grant.id, "2026-06-01", 100, 80);   // due, FMV entered
     addEvent(db, grant.id, "2027-06-01", 100, null); // future
 
-    const r = await materializeDueEvents(
-      db, grant, async () => ({ price: 80, currency: "USD" }), "2026-07-04"
-    );
+    const r = materializeDueEvents(db, grant, "2026-07-04");
     expect(r).toEqual({ vested: 2, needs_fmv: 0 });
 
     const pos = computePosition(db, grant.investment_id);
@@ -191,20 +189,21 @@ describe("materializeDueEvents", () => {
     expect(rows[2].transaction_id).toBeNull();
   });
 
-  it("failed FMV fetch leaves the event scheduled and flags needs_fmv", async () => {
+  it("a due event with no FMV entered stays scheduled and flags needs_fmv", () => {
     const grant = seedGrant(db);
     addEvent(db, grant.id, "2026-01-01", 100, null);
 
-    const r = await materializeDueEvents(db, grant, async () => null, "2026-07-04");
+    // Nothing can look the price up — it waits for you to type it.
+    const r = materializeDueEvents(db, grant, "2026-07-04");
     expect(r).toEqual({ vested: 0, needs_fmv: 1 });
     expect(computePosition(db, grant.investment_id).remaining_units).toBe(0);
   });
 
-  it("is idempotent — a second run vests nothing new", async () => {
+  it("is idempotent — a second run vests nothing new", () => {
     const grant = seedGrant(db);
     addEvent(db, grant.id, "2026-01-01", 100, 42);
-    await materializeDueEvents(db, grant, async () => null, "2026-07-04");
-    const again = await materializeDueEvents(db, grant, async () => null, "2026-07-04");
+    materializeDueEvents(db, grant, "2026-07-04");
+    const again = materializeDueEvents(db, grant, "2026-07-04");
     expect(again).toEqual({ vested: 0, needs_fmv: 0 });
     expect(db.prepare("SELECT COUNT(*) n FROM transactions").get()).toEqual({ n: 1 });
   });
@@ -214,15 +213,15 @@ describe("syncEventTransaction", () => {
   let db: Database.Database;
   beforeEach(() => { db = makeDb(); });
 
-  async function vestedEvent(grant: ReturnType<typeof seedGrant>): Promise<VestingEventRow> {
+  function vestedEvent(grant: ReturnType<typeof seedGrant>): VestingEventRow {
     addEvent(db, grant.id, "2026-01-01", 100, 50);
-    await materializeDueEvents(db, grant, async () => null, "2026-07-04");
+    materializeDueEvents(db, grant, "2026-07-04");
     return db.prepare("SELECT * FROM rsu_vesting_events LIMIT 1").get() as VestingEventRow;
   }
 
   it("editing units + FMV updates the linked BUY lot", async () => {
     const grant = seedGrant(db);
-    const ev = await vestedEvent(grant);
+    const ev = vestedEvent(grant);
 
     db.prepare("UPDATE rsu_vesting_events SET units = 120, fmv_at_vest = 60 WHERE id = ?").run(ev.id);
     const updated = db.prepare("SELECT * FROM rsu_vesting_events WHERE id = ?").get(ev.id) as VestingEventRow;
@@ -235,7 +234,7 @@ describe("syncEventTransaction", () => {
 
   it("moving a vested event to a future date un-vests it (BUY deleted)", async () => {
     const grant = seedGrant(db);
-    const ev = await vestedEvent(grant);
+    const ev = vestedEvent(grant);
 
     db.prepare("UPDATE rsu_vesting_events SET vest_date = '2027-01-01' WHERE id = ?").run(ev.id);
     const updated = db.prepare("SELECT * FROM rsu_vesting_events WHERE id = ?").get(ev.id) as VestingEventRow;

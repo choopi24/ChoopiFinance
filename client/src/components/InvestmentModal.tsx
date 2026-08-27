@@ -4,17 +4,13 @@ import { X, ArrowLeft, GitMerge, Plus, Trash2 } from "lucide-react";
 import { TypeCard } from "./TypeCard";
 import { Button } from "./Button";
 import { Segment } from "./Segment";
-import { TickerAutocomplete } from "./TickerAutocomplete";
-import { IlFundAutocomplete } from "./IlFundAutocomplete";
 import {
   useCreateInvestment, useAddTransaction, useEditInvestment,
   useCheckExisting, useBulkTransactions,
 } from "../hooks/useInvestments";
-import { useQuote } from "../hooks/usePrices";
-import { api } from "../lib/api";
 import { fmt } from "../lib/fmt";
 import type { AssetType, Currency } from "@choopi/shared";
-import type { Investment, BulkTransactionRow, SymbolHit, IlFundHit } from "../hooks/useInvestments";
+import type { Investment, BulkTransactionRow } from "../hooks/useInvestments";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -44,15 +40,10 @@ const ENTRY_MODE_OPTIONS = [
 
 const CRYPTO_SUGGESTIONS = ["BTC", "ETH", "SOL", "ADA", "XRP", "DOT"];
 const MANUAL_TYPES = new Set(["pension", "gemel", "education", "money_market", "other"]);
-// Types covered by the regulator's Gemel-Net / Pensia-Net datasets (fund picker + auto yields).
+// Israeli fund types: fee fields apply to these (fund picker removed with the data source).
 const IL_FUND_TYPES = new Set(["pension", "gemel", "education"]);
 // Manual types that log one-off DEPOSIT rows (pension uses the monthly-deposit model instead).
 const DEPOSIT_ROW_TYPES = new Set(["gemel", "education", "money_market", "other"]);
-
-interface IsinResult {
-  isin: string; symbol: string; name: string;
-  currency: string; etf_kind: string | null; asset_type: string; exchange: string | null;
-}
 
 // ── Main component ─────────────────────────────────────────────────────────────
 
@@ -221,51 +212,6 @@ function MergeBanner({ info, onSeparate }: { info: MergeInfo; onSeparate: () => 
   );
 }
 
-// ── Live quote preview (transparency for value-based entry) ───────────────────
-// Shows the price used and the units your amount converts to, BEFORE you save —
-// or a clear notice that there's no live price so it'll be recorded at cost.
-
-function fmtPrice(n: number): string {
-  return n.toLocaleString("en-US", { maximumFractionDigits: n < 1 ? 6 : 2 });
-}
-
-function QuotePreview({
-  ticker, type, amount, currency,
-}: { ticker: string; type: AssetType; amount: string; currency: Currency }) {
-  const enabled = ticker.trim().length >= 1;
-  const { data: quote, isFetching, isError } = useQuote(
-    ticker, type as "stock" | "etf" | "crypto", undefined, enabled
-  );
-  if (!enabled) return null;
-
-  if (isFetching && !quote) {
-    return <div className="cf-quote-preview">Fetching live price…</div>;
-  }
-
-  const amt = Number(amount) || 0;
-
-  if (isError || !quote) {
-    return (
-      <div className="cf-quote-preview is-warn">
-        No live price for <strong>{ticker}</strong>
-        {amt > 0 ? <> — it’ll be saved at cost ({fmt(amt, { currency })}), value won’t auto-update.</> : "."}
-      </div>
-    );
-  }
-
-  const sameCcy = quote.currency === currency;
-  const units = amt > 0 && quote.price > 0 && sameCcy ? amt / quote.price : null;
-  return (
-    <div className="cf-quote-preview">
-      Live price: <span className="mono">{fmtPrice(quote.price)} {quote.currency}</span>
-      {units != null && (
-        <> → ≈ <span className="mono">{units.toLocaleString("en-US", { maximumFractionDigits: 6 })}</span> units</>
-      )}
-      {amt > 0 && !sameCcy && <> · your {currency} amount is converted on save</>}
-    </div>
-  );
-}
-
 // ── Holding form for market types (crypto / stock / etf) ──────────────────────
 // Creates the investment + a synthetic BUY in one server call.
 
@@ -282,7 +228,6 @@ function HoldingMarketForm({ type, onClose, setError }: HoldingMarketFormProps) 
   const [ticker, setTicker]     = useState("");
   const [name, setName]         = useState("");
   const [isin, setIsin]         = useState("");
-  const [isinLoading, setIsinLoading] = useState(false);
   const [amount, setAmount]     = useState("");   // money invested (primary path)
   const [units, setUnits]       = useState("");   // optional exact share count
   const [avgPrice, setAvgPrice] = useState("");   // optional, paired with units
@@ -299,29 +244,6 @@ function HoldingMarketForm({ type, onClose, setError }: HoldingMarketFormProps) 
   const createInv = useCreateInvestment();
   const addTx     = useAddTransaction();
   const isPending = createInv.isPending || addTx.isPending;
-
-  // Fill symbol + name + native currency when a suggestion is picked.
-  function applyHit(h: SymbolHit) {
-    setTicker(h.symbol.toUpperCase());
-    if (!name.trim()) setName(h.name);
-    if (h.currency === "USD" || h.currency === "NIS") setCurrency(h.currency as Currency);
-  }
-
-  async function lookupIsin() {
-    if (!isin || isin.length < 12) return;
-    setIsinLoading(true);
-    try {
-      const res = await api.get<{ success: true; data: IsinResult }>(`/lookup/isin/${isin.toUpperCase()}`);
-      const d = res.data;
-      setTicker(d.symbol);
-      if (!name) setName(d.name);
-      if (d.currency === "USD" || d.currency === "NIS") setCurrency(d.currency as Currency);
-    } catch {
-      setError("ISIN not found — enter ticker manually");
-    } finally {
-      setIsinLoading(false);
-    }
-  }
 
   async function handleSubmit() {
     setError(null);
@@ -359,7 +281,7 @@ function HoldingMarketForm({ type, onClose, setError }: HoldingMarketFormProps) 
       }
 
       if (hasUnits) {
-        // Exact entry. If avg cost is omitted the server fills it from the live price.
+        // Exact entry: units + the price you paid.
         await addTx.mutateAsync({
           investment_id: investmentId,
           kind: "BUY",
@@ -371,7 +293,7 @@ function HoldingMarketForm({ type, onClose, setError }: HoldingMarketFormProps) 
           notes: notes.trim() || "Initial holding",
         });
       } else {
-        // Amount-only: the server converts the money into shares at the live price.
+        // Amount-only: recorded at cost (no price source to derive units from).
         await addTx.mutateAsync({
           investment_id: investmentId,
           kind: "BUY",
@@ -395,30 +317,20 @@ function HoldingMarketForm({ type, onClose, setError }: HoldingMarketFormProps) 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       {isEtf && (
-        <Field label="ISIN (optional — auto-fills ticker)">
-          <div style={{ display: "flex", gap: 8 }}>
-            <input
-              value={isin}
-              onChange={e => setIsin(e.target.value.toUpperCase())}
-              placeholder="IE00B4L5Y983"
-              style={{ flex: 1 }}
-              onBlur={lookupIsin}
-            />
-            <Button variant="ghost" size="sm" onClick={lookupIsin} disabled={isinLoading}>
-              {isinLoading ? "…" : "Lookup"}
-            </Button>
-          </div>
+        <Field label="ISIN (optional)" hint="Recorded for your reference — nothing looks it up">
+          <input value={isin} onChange={e => setIsin(e.target.value.toUpperCase())}
+            placeholder="IE00B4L5Y983" />
         </Field>
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label={isCrypto ? "Coin symbol" : "Ticker symbol"} hint="Type to search">
-          <TickerAutocomplete
-            type={type as "stock" | "etf" | "crypto"}
+          <input
             value={ticker}
-            onChange={setTicker}
-            onSelect={applyHit}
-            placeholder={isCrypto ? "BTC, eth…" : isEtf ? "VOO, iShares…" : "NVDA, Apple…"}
+            onChange={e => setTicker(e.target.value.toUpperCase())}
+            placeholder={"isCrypto ? "}
+            style={{ textTransform: "uppercase" }}
+            autoComplete="off"
             autoFocus
           />
           {isCrypto && (
@@ -441,7 +353,7 @@ function HoldingMarketForm({ type, onClose, setError }: HoldingMarketFormProps) 
 
       {/* Primary: add by money invested */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <Field label="Amount invested" hint="We convert this to shares at the live price">
+        <Field label="Amount invested" hint="Recorded at cost — add units + price below for unit tracking">
           <input type="number" min="0" step="any" value={amount}
             onChange={e => setAmount(e.target.value)} placeholder="e.g. 5000" />
         </Field>
@@ -450,10 +362,6 @@ function HoldingMarketForm({ type, onClose, setError }: HoldingMarketFormProps) 
         </Field>
       </div>
 
-      {/* Transparency: show the price + computed units (or cost fallback) before saving */}
-      {units === "" && upperTicker.length >= 1 && (
-        <QuotePreview ticker={upperTicker} type={type} amount={amount} currency={currency} />
-      )}
 
       {/* Optional precise entry */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -461,7 +369,7 @@ function HoldingMarketForm({ type, onClose, setError }: HoldingMarketFormProps) 
           <input type="number" min="0" step="any" value={units}
             onChange={e => setUnits(e.target.value)} placeholder="—" />
         </Field>
-        <Field label="Avg cost per unit (optional)" hint="Blank = use live price">
+        <Field label="Avg cost per unit" hint="Required if you entered units">
           <input type="number" min="0" step="any" value={avgPrice}
             onChange={e => setAvgPrice(e.target.value)} placeholder="—" />
         </Field>
@@ -552,13 +460,13 @@ function CryptoForm({ onClose, setError }: { onClose: () => void; setError: (e: 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <Field label="Coin symbol" hint="Type to search">
-        <TickerAutocomplete
-          type="crypto"
-          value={ticker}
-          onChange={setTicker}
-          onSelect={h => setTicker(h.symbol.toUpperCase())}
-          placeholder="BTC, eth…"
-        />
+        <input
+            value={ticker}
+            onChange={e => setTicker(e.target.value.toUpperCase())}
+            placeholder={"BTC, eth…"}
+            style={{ textTransform: "uppercase" }}
+            autoComplete="off"
+          />
         <div className="cf-suggestions">
           {CRYPTO_SUGGESTIONS.map(s => (
             <button key={s} className="cf-suggestion-chip" onClick={() => setTicker(s)}>{s}</button>
@@ -619,7 +527,6 @@ function StockForm({
 }: { onClose: () => void; setError: (e: string | null) => void; isEtf: boolean }) {
   const [ticker, setTicker]     = useState("");
   const [isin, setIsin]         = useState("");
-  const [isinLoading, setIsinLoading] = useState(false);
   const [etfKind, setEtfKind]   = useState<"accumulating" | "distributing" | "">("");
   const [kind, setKind]         = useState<"BUY" | "SELL">("BUY");
   const [name, setName]         = useState("");
@@ -638,23 +545,6 @@ function StockForm({
   const createInv = useCreateInvestment();
   const addTx     = useAddTransaction();
   const isPending = createInv.isPending || addTx.isPending;
-
-  async function lookupIsin() {
-    if (!isin || isin.length < 12) return;
-    setIsinLoading(true);
-    try {
-      const res = await api.get<{ success: true; data: IsinResult }>(`/lookup/isin/${isin.toUpperCase()}`);
-      const d = res.data;
-      setTicker(d.symbol);
-      if (!name) setName(d.name);
-      if (d.currency === "USD" || d.currency === "NIS") setCurrency(d.currency as Currency);
-      if (d.etf_kind === "accumulating" || d.etf_kind === "distributing") setEtfKind(d.etf_kind);
-    } catch {
-      setError("ISIN not found — enter ticker manually");
-    } finally {
-      setIsinLoading(false);
-    }
-  }
 
   async function handleSubmit() {
     setError(null);
@@ -697,29 +587,20 @@ function StockForm({
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       {isEtf && (
-        <Field label="ISIN (optional — auto-fills ticker & kind)">
-          <div style={{ display: "flex", gap: 8 }}>
-            <input value={isin} onChange={e => setIsin(e.target.value.toUpperCase())}
-              placeholder="IE00B4L5Y983" style={{ flex: 1 }} onBlur={lookupIsin} />
-            <Button variant="ghost" size="sm" onClick={lookupIsin} disabled={isinLoading}>
-              {isinLoading ? "…" : "Lookup"}
-            </Button>
-          </div>
+        <Field label="ISIN (optional)" hint="Recorded for your reference — nothing looks it up">
+          <input value={isin} onChange={e => setIsin(e.target.value.toUpperCase())}
+            placeholder="IE00B4L5Y983" />
         </Field>
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Ticker symbol" hint="Type to search">
-          <TickerAutocomplete
-            type={isEtf ? "etf" : "stock"}
+          <input
             value={ticker}
-            onChange={setTicker}
-            onSelect={h => {
-              setTicker(h.symbol.toUpperCase());
-              if (!name.trim()) setName(h.name);
-              if (h.currency === "USD" || h.currency === "NIS") setCurrency(h.currency as Currency);
-            }}
-            placeholder={isEtf ? "VOO, iShares…" : "NVDA, Apple…"}
+            onChange={e => setTicker(e.target.value.toUpperCase())}
+            placeholder={"isEtf ? "}
+            style={{ textTransform: "uppercase" }}
+            autoComplete="off"
           />
         </Field>
         <Field label="Name (optional)">
@@ -806,19 +687,10 @@ function ManualForm({
   const [depCcy, setDepCcy]             = useState<Currency>("NIS");
   // One-off DEPOSIT rows (holding mode only)
   const [deposits, setDeposits]         = useState<DepositRow[]>([]);
-  // Israeli fund linkage (Gemel-Net / Pensia-Net)
-  const [fund, setFund]                 = useState<IlFundHit | null>(null);
   const [feeDeposit, setFeeDeposit]     = useState("");
   const [feeBalance, setFeeBalance]     = useState("");
 
   const isIlFund = IL_FUND_TYPES.has(type);
-
-  function applyFund(h: IlFundHit) {
-    setFund(h);
-    setName(h.name);
-    if (h.avg_deposit_fee != null && feeDeposit === "") setFeeDeposit(String(h.avg_deposit_fee));
-    if (h.avg_annual_mgmt_fee != null && feeBalance === "") setFeeBalance(String(h.avg_annual_mgmt_fee));
-  }
 
   const createInv  = useCreateInvestment();
   const bulkTx     = useBulkTransactions();
@@ -857,8 +729,6 @@ function ManualForm({
         occurred_at: new Date(date).toISOString(),
         monthly_deposit: isIlFund && entryMode === "holding" ? md : undefined,
         deposit_currency: isIlFund && entryMode === "holding" ? depCcy : undefined,
-        fund_id: fund?.fund_id ?? undefined,
-        fund_track: fund?.name ?? undefined,
         fee_deposit_pct: isIlFund ? fDep : undefined,
         fee_balance_pct: isIlFund ? fBal : undefined,
       });
@@ -887,28 +757,14 @@ function ManualForm({
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       {isIlFund ? (
         <Field label="Fund name" hint="Type the Hebrew name to search the regulator's fund list (מסלול-specific)">
-          <IlFundAutocomplete
-            type={type}
+          <input
             value={name}
-            onChange={v => { setName(v); if (fund) setFund(null); }}
-            onSelect={applyFund}
-            placeholder={type === "pension" ? "מנורה מבטחים פנסיה…" : type === "gemel" ? "הפניקס גמל…" : "אלטשולר השתלמות…"}
+            onChange={e => setName(e.target.value)}
+            placeholder="הפניקס גמל, מנורה פנסיה…"
+            dir="auto"
+            autoComplete="off"
             autoFocus
           />
-          {fund && (
-            <div className="cf-quote-preview" style={{ marginTop: 6 }}>
-              Linked to fund <span className="mono">#{fund.fund_id}</span>
-              {fund.year_to_date_yield != null && <> · YTD <span className="mono">{fund.year_to_date_yield}%</span></>}
-              {" — published yields will keep the value fresh between balance updates."}
-              <button
-                type="button"
-                onClick={() => setFund(null)}
-                style={{ marginLeft: 8, color: "var(--text-faint)", textDecoration: "underline", background: "none", border: 0, cursor: "pointer", fontSize: 11 }}
-              >
-                Unlink
-              </button>
-            </div>
-          )}
         </Field>
       ) : (
         <Field label="Name">

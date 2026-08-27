@@ -8,11 +8,9 @@ import { Button } from "../components/Button";
 import { Segment } from "../components/Segment";
 import { EmptyState } from "../components/EmptyState";
 import { SkeletonShimmer } from "../components/SkeletonShimmer";
-import { TickerAutocomplete } from "../components/TickerAutocomplete";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../hooks/useTheme";
 import { useCurrency } from "../hooks/useCurrency";
-import { usePrices } from "../hooks/usePrices";
 import { useFxRate } from "../hooks/useFxRate";
 import { toDisplayCurrency, FALLBACK_FX_USD_NIS } from "../hooks/usePortfolio";
 import {
@@ -82,7 +80,7 @@ function EventRow({ event, currency }: { event: RsuEvent; currency: string }) {
       </td>
       <td>
         <input type="number" min="0" step="any" value={fmv} onChange={e => setFmv(e.target.value)}
-          placeholder="auto" className="mono" style={{ width: 100, fontSize: 12 }} />
+          placeholder="enter FMV" className="mono" style={{ width: 100, fontSize: 12 }} />
       </td>
       <td className="mono" style={{ fontSize: 12 }}>
         {event.status === "vested" && event.fmv_at_vest != null
@@ -93,7 +91,7 @@ function EventRow({ event, currency }: { event: RsuEvent; currency: string }) {
         {event.status === "vested" ? (
           <span className="cf-pill" style={{ color: "var(--emerald)" }}>Vested</span>
         ) : needsFmv ? (
-          <span className="cf-pill is-amber" title="Vest date passed but no cost basis — enter the FMV or hit Refresh">
+          <span className="cf-pill is-amber" title="Vest date passed but no cost basis — enter the FMV at vest">
             Needs FMV
           </span>
         ) : (
@@ -137,7 +135,7 @@ function GrantDetail({ grant, displayCcy, fxRate }: { grant: RsuGrant; displayCc
         <div style={{ display: "flex", gap: 8 }}>
           <Button variant="ghost" size="sm" icon={<RefreshCw size={13} strokeWidth={1.8} />}
             onClick={() => refresh.mutate(grant.id)} disabled={refresh.isPending}>
-            {refresh.isPending ? "Refreshing…" : "Refresh vesting"}
+            {refresh.isPending ? "Posting…" : "Post due vests"}
           </Button>
           <Button variant="ghost" size="sm" icon={<FileText size={13} strokeWidth={1.8} />}
             onClick={() => { window.location.href = `/transactions?investment_id=${grant.investment_id}`; }}>
@@ -159,7 +157,7 @@ function GrantDetail({ grant, displayCcy, fxRate }: { grant: RsuGrant; displayCc
         <div className="cf-quote-preview is-warn" style={{ marginBottom: 10 }}>
           <AlertTriangle size={13} strokeWidth={1.8} style={{ verticalAlign: -2, marginRight: 6 }} />
           {fmtUnits(grant.due_units)} units passed their vest date but aren't booked yet —
-          hit <strong>Refresh vesting</strong> to fetch their FMV, or enter it manually below.
+          enter the FMV at vest below, then hit <strong>Post due vests</strong>.
         </div>
       )}
 
@@ -370,15 +368,18 @@ function NewGrantModal({ onClose }: { onClose: () => void }) {
 
         <div className="cf-modal-body" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <Field label="Stock symbol" hint="Type to search">
-              <TickerAutocomplete
-                type="stock" value={symbol} onChange={setSymbol}
-                onSelect={h => { setSymbol(h.symbol.toUpperCase()); if (!company.trim()) setCompany(h.name); }}
-                placeholder="NVDA, MSFT…" autoFocus
+            <Field label="Stock symbol">
+              <input
+                value={symbol}
+                onChange={e => setSymbol(e.target.value.toUpperCase())}
+                placeholder="NVDA, MSFT…"
+                style={{ textTransform: "uppercase" }}
+                autoComplete="off"
+                autoFocus
               />
             </Field>
             <Field label="Company (optional)">
-              <input value={company} onChange={e => setCompany(e.target.value)} placeholder="Auto-filled from search" />
+              <input value={company} onChange={e => setCompany(e.target.value)} placeholder="Microsoft" />
             </Field>
           </div>
 
@@ -441,7 +442,7 @@ function NewGrantModal({ onClose }: { onClose: () => void }) {
                       onChange={e => setRows(rs => rs.map(r => r._id === row._id ? { ...r, units: e.target.value } : r))} />
                   </Field>
                   <Field label="FMV at vest (optional)">
-                    <input type="number" min="0" step="any" value={row.fmv} placeholder="auto-fetch" className="mono"
+                    <input type="number" min="0" step="any" value={row.fmv} placeholder="optional" className="mono"
                       onChange={e => setRows(rs => rs.map(r => r._id === row._id ? { ...r, fmv: e.target.value } : r))} />
                   </Field>
                   <button className="cf-icon-btn" style={{ marginBottom: 2, color: "var(--rose)" }} title="Remove"
@@ -485,7 +486,6 @@ export default function RsuGrants() {
   const { user, logout } = useAuth();
   const [theme, toggleTheme] = useTheme();
   const [currency, setCurrency] = useCurrency();
-  const { refresh, isRefreshing, lastSync } = usePrices();
   const { data: fx } = useFxRate();
 
   const { data: grants = [], isLoading } = useRsuGrants();
@@ -518,9 +518,6 @@ export default function RsuGrants() {
       onLogout={logout}
       greeting={greeting}
       onAdd={() => setAddOpen(true)}
-      onRefresh={refresh}
-      isRefreshing={isRefreshing}
-      lastSync={lastSync}
     >
       <div className="cf-page-header">
         <div>

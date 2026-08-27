@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import type { ReactNode } from "react";
-import { Plus, RotateCw, Eye, EyeOff, Edit2, Trash2, FileText, RefreshCw, Upload, History, TrendingUp, ChevronDown, PlusCircle } from "lucide-react";
+import { Plus, Eye, EyeOff, Edit2, Trash2, FileText, RefreshCw, Upload, History, TrendingUp, ChevronDown, PlusCircle } from "lucide-react";
 import { LineChart } from "../components/LineChart";
 import { useInvestmentHistory } from "../hooks/useInvestments";
 import { EmptyState } from "../components/EmptyState";
@@ -8,7 +8,6 @@ import { CsvImportModal } from "../components/CsvImportModal";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../hooks/useTheme";
 import { useCurrency } from "../hooks/useCurrency";
-import { usePrices } from "../hooks/usePrices";
 import { useFxRate } from "../hooks/useFxRate";
 import { useInvestments } from "../hooks/useInvestments";
 import { toDisplayCurrency, FALLBACK_FX_USD_NIS } from "../hooks/usePortfolio";
@@ -78,14 +77,6 @@ function InvSubLine({ inv }: { inv: Investment }) {
       const { text, urgent } = liquidCountdown(inv.liquid_date);
       return <div className={`cf-inv-sub ${urgent ? "is-amber" : ""}`}>{text}</div>;
     }
-    // Linked Israeli fund: value grows from published yields between balance updates.
-    if (inv.value_estimated) {
-      return (
-        <div className="cf-inv-sub" title="Grown from the regulator's published monthly yields since your last balance update">
-          Estimated from fund yields · last balance {relativeDate(inv.last_update_at)}
-        </div>
-      );
-    }
     if (inv.stale_days !== null && inv.stale_days >= 30) {
       return (
         <div className="cf-inv-sub is-stale">
@@ -102,12 +93,12 @@ function InvSubLine({ inv }: { inv: Investment }) {
   if (inv.broker) parts.push(inv.broker);
   if (inv.type === "crypto" && inv.ticker) parts.push("wallet");
   if (inv.etf_kind) parts.push(inv.etf_kind === "accumulating" ? "Acc" : "Dist");
-  // No cached live price → valued at cost (e.g. an unpriceable TASE fund).
+  // No price entered yet → valued at cost. Prices are hand-entered now.
   const noLivePrice = !inv.closed_at && inv.current_price == null;
   return (
     <div className="cf-inv-sub">
       {parts.join(" · ") || inv.ticker || ""}
-      {noLivePrice && <span className="cf-badge-nolive" title="No market price found — valued at cost">no live price</span>}
+      {noLivePrice && <span className="cf-badge-nolive" title="No price entered yet — valued at cost">no price yet</span>}
     </div>
   );
 }
@@ -366,7 +357,6 @@ export default function Investments() {
   const { user, logout } = useAuth();
   const [theme, toggleTheme] = useTheme();
   const [currency, setCurrency] = useCurrency();
-  const { refresh, isRefreshing, lastSync } = usePrices();
   const { data: fx } = useFxRate();
 
   const [filter, setFilter]           = useState("all");
@@ -425,9 +415,6 @@ export default function Investments() {
       greeting={greeting}
       onAdd={() => setAddOpen(true)}
       onImport={() => setCsvOpen(true)}
-      onRefresh={refresh}
-      isRefreshing={isRefreshing}
-      lastSync={lastSync}
     >
       {/* Page header */}
       <div className="cf-page-header">
@@ -485,18 +472,6 @@ export default function Investments() {
             {showClosed ? <Eye size={13} strokeWidth={1.6} /> : <EyeOff size={13} strokeWidth={1.6} />}
             Closed
           </label>
-          <button
-            className="cf-icon-btn"
-            title="Refresh prices"
-            onClick={refresh}
-            disabled={isRefreshing}
-          >
-            <RotateCw
-              size={14}
-              strokeWidth={1.8}
-              style={{ animation: isRefreshing ? "spin 1s linear infinite" : "none" }}
-            />
-          </button>
         </div>
       </div>
 
