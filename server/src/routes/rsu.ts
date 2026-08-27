@@ -4,7 +4,6 @@ import { requireAuth } from "../middleware/requireAuth.js";
 import { ok, fail } from "../middleware/respond.js";
 import { enrichInvestment, getUsdNisRate } from "../services/portfolio.js";
 import { recomputeRealized } from "../services/fifo.js";
-import { takeSnapshot } from "../services/snapshot.js";
 import {
   generateVestingSchedule,
   summarizeVesting,
@@ -215,7 +214,6 @@ rsuRouter.post("/", async (req, res) => {
     // Materialize anything already due (fetches historical FMVs — best-effort).
     const grant = loadGrant(db, grantId, req.user!.id)!;
     materializeDueEvents(db, grant);
-    takeSnapshot(db, req.user!.id);
 
     ok(res, grantPayload(db, grant, req.user!.id), 201);
   } catch (e) {
@@ -274,7 +272,6 @@ rsuRouter.patch("/events/:eventId", async (req, res) => {
     const updated = db.prepare("SELECT * FROM rsu_vesting_events WHERE id = ?").get(eventId) as VestingEventRow;
     syncEventTransaction(db, updated, grant.investment_id);       // vested → update/unvest the BUY
     materializeDueEvents(db, grant);                        // scheduled + now due + has FMV → vest
-    takeSnapshot(db, req.user!.id);
 
     ok(res, grantPayload(db, loadGrant(db, grant.id, req.user!.id)!, req.user!.id));
   } catch (e) {
@@ -394,8 +391,7 @@ rsuRouter.post("/:id/refresh", async (req, res) => {
     const grant = loadGrant(db, Number(req.params.id), req.user!.id);
     if (!grant) return fail(res, "Grant not found", 404);
     const result = materializeDueEvents(db, grant);
-    if (result.vested > 0) takeSnapshot(db, req.user!.id);
-    ok(res, { ...result, ...grantPayload(db, grant, req.user!.id) });
+    if (result.vested > 0)    ok(res, { ...result, ...grantPayload(db, grant, req.user!.id) });
   } catch (e) {
     fail(res, (e as Error).message, 500);
   }

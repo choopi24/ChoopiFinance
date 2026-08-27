@@ -3,7 +3,6 @@ import { getDb } from "../db/init.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { ok, fail } from "../middleware/respond.js";
 import { recomputeRealized } from "../services/fifo.js";
-import { takeSnapshot } from "../services/snapshot.js";
 import { validateTransactionPatch } from "./editValidation.js";
 
 export const transactionsRouter = Router();
@@ -142,7 +141,6 @@ transactionsRouter.post("/", async (req, res) => {
     const tx = db.prepare("SELECT * FROM transactions WHERE id = ?").get(txId);
 
     // Snapshot portfolio after every market transaction so the history chart has fine-grained data
-    takeSnapshot(db, req.user!.id);
 
     ok(res, { transaction: tx, merge_candidate }, 201);
   } catch (e) {
@@ -226,7 +224,6 @@ transactionsRouter.post("/bulk", (req, res) => {
     runBulk();
 
     if (isMarket) recomputeRealized(db, Number(investment_id));
-    takeSnapshot(db, req.user!.id);
 
     ok(res, { inserted: rows.length }, 201);
   } catch (e) {
@@ -258,7 +255,6 @@ transactionsRouter.patch("/:id", (req, res) => {
       recomputeRealized(db, tx.investment_id);
     }
 
-    takeSnapshot(db, req.user!.id);
 
     const updated = db.prepare("SELECT * FROM transactions WHERE id = ?").get(txId);
     ok(res, updated);
@@ -307,7 +303,6 @@ transactionsRouter.delete("/:id", (req, res) => {
       recomputeRealized(db, investmentId);
     }
 
-    takeSnapshot(db, req.user!.id);
 
     ok(res, { id: txId });
   } catch (e) {

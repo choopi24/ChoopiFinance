@@ -3,7 +3,6 @@ import { getDb } from "../db/init.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { ok, fail } from "../middleware/respond.js";
 import { recomputeRealized } from "../services/fifo.js";
-import { takeSnapshot } from "../services/snapshot.js";
 
 export const csvRouter = Router();
 csvRouter.use(requireAuth);
@@ -437,7 +436,6 @@ csvRouter.post("/import/:type", (req, res) => {
       }
     })();
 
-    takeSnapshot(db, uid);
     ok(res, { investments_created, transactions_created }, 201);
   } catch (e) {
     fail(res, (e as Error).message, 500);
@@ -526,7 +524,6 @@ csvRouter.post("/import-matrix", (req, res) => {
       }
     })();
 
-    takeSnapshot(db, uid);
     ok(res, { investments_created, transactions_created }, 201);
   } catch (e) {
     fail(res, (e as Error).message, 500);

@@ -22,7 +22,6 @@ import { csvRouter } from "./routes/csv.js";
 import { searchRouter } from "./routes/search.js";
 import { rsuRouter } from "./routes/rsu.js";
 import { errorHandler } from "./middleware/errorHandler.js";
-import { takeSnapshot } from "./services/snapshot.js";
 import { runBackup, hasRecentBackup } from "./services/backup.js";
 
 const app = express();
@@ -44,30 +43,13 @@ app.use(cookieParser());
 // Initialise DB + run migrations on startup
 getDb();
 
-// Backfill missed daily snapshots — the 02:00 cron never fires on a machine
-// that sleeps at night, so on boot snapshot any user without one in the last
-// 20 hours. (The FX warm-up that used to run here is gone with the provider.)
-{
-  const db = getDb();
-  const cutoff = new Date(Date.now() - 20 * 60 * 60 * 1000).toISOString();
-  const users = db.prepare(
-    `SELECT id FROM users u
-     WHERE NOT EXISTS (
-       SELECT 1 FROM portfolio_snapshots s
-       WHERE s.user_id = u.id AND s.snapshot_at >= ?
-     )`
-  ).all(cutoff) as { id: number }[];
-  for (const u of users) takeSnapshot(db, u.id);
-  if (users.length > 0) console.log(`[boot] Backfilled snapshots for ${users.length} user(s)`);
-
-  // Boot backup — the cron below only fires if the machine is awake at 02:05.
-  // Skipped when a backup from the last 12h exists, so rapid dev restarts
-  // (tsx watch) don't churn the retention window.
-  if (!hasRecentBackup(12)) {
-    runBackup(db)
-      .then(r => console.log(`[backup] ${r.file}${r.pruned.length ? ` (pruned ${r.pruned.length})` : ""}`))
-      .catch(err => console.error("[backup] boot backup failed:", (err as Error).message));
-  }
+// Boot backup — the cron below only fires if the machine is awake at 02:05.
+// Skipped when a backup from the last 12h exists, so rapid dev restarts
+// (tsx watch) don't churn the retention window.
+if (!hasRecentBackup(12)) {
+  runBackup(getDb())
+    .then(r => console.log(`[backup] ${r.file}${r.pruned.length ? ` (pruned ${r.pruned.length})` : ""}`))
+    .catch(err => console.error("[backup] boot backup failed:", (err as Error).message));
 }
 
 // Routes
@@ -100,17 +82,6 @@ if (existsSync(CLIENT_DIST)) {
 app.listen(PORT, HOST, () => {
   console.log(`Choopi server  →  http://${HOST}:${PORT}`);
   console.log(`Health check   →  http://localhost:${PORT}/api/health`);
-});
-
-// ── Daily portfolio snapshot at 02:00 local ───────────────────────────────────
-cron.schedule("0 2 * * *", () => {
-  console.log("[cron] Daily snapshot starting…");
-  const db = getDb();
-  const users = db.prepare("SELECT id FROM users").all() as { id: number }[];
-  for (const u of users) {
-    takeSnapshot(db, u.id);
-  }
-  console.log(`[cron] Snapshotted ${users.length} user(s)`);
 });
 
 // ── Daily DB backup at 02:05 local (WAL-safe hot copy + retention) ────────────

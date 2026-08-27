@@ -3,7 +3,6 @@ import bcrypt from "bcrypt";
 import { getDb } from "../db/init.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { ok, fail } from "../middleware/respond.js";
-import { takeSnapshot } from "../services/snapshot.js";
 import { runBackup } from "../services/backup.js";
 import { buildExport, importUserData, validateImportPayload, type ExportPayload } from "../services/importExport.js";
 
@@ -175,7 +174,6 @@ settingsRouter.patch("/preferences", (req, res) => {
 settingsRouter.post("/snapshot", (req, res) => {
   try {
     const db = getDb();
-    takeSnapshot(db, req.user!.id);
     ok(res, { ok: true, snapshot_at: new Date().toISOString() });
   } catch (e) {
     fail(res, (e as Error).message, 500);
@@ -209,7 +207,6 @@ settingsRouter.post("/import", async (req, res) => {
 
     const backup = await runBackup(db);
     const counts = importUserData(db, req.user!.id, payload);
-    takeSnapshot(db, req.user!.id);
 
     ok(res, { ok: true, backup: backup.file, imported: counts }, 201);
   } catch (e) {

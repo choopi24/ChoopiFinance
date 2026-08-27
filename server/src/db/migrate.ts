@@ -1,54 +1,127 @@
-import Database from "better-sqlite3";
-import { readdirSync, readFileSync } from "fs";
+/**
+ * Migration runner.
+ *
+ * Applies every `NNN_name.sql` in server/migrations/ (lexicographic order) that
+ * hasn't run yet, each inside ONE transaction. Because the runner owns the
+ * transaction, migration files must NOT contain BEGIN/COMMIT — a failure rolls
+ * the whole file back and leaves it unrecorded, so a fixed file re-runs cleanly.
+ *
+ * Applied files are fingerprinted. Editing a migration that already ran is a
+ * hard error rather than a silent no-op: on a single-user app the DB in front of
+ * you is the only copy, and a schema that silently diverges from its migration
+ * history is how data gets corrupted.
+ */
+
+import type Database from "better-sqlite3";
+import { createHash } from "crypto";
+import { existsSync, readdirSync, readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const MIGRATIONS_DIR = join(__dirname, "migrations");
+/** server/migrations — resolves identically from src/db (dev) and dist/db (built). */
+export const MIGRATIONS_DIR = join(__dirname, "../../migrations");
 
-/** `migrationsDir` is overridable for tests only; production always uses the default. */
-export function runMigrations(db: Database.Database, migrationsDir: string = MIGRATIONS_DIR): void {
+const FILE_PATTERN = /^\d{3,}_[\w-]+\.sql$/;
+
+function sha256(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex").slice(0, 16);
+}
+
+export interface AppliedMigration {
+  version: string;
+  checksum: string;
+  applied_at: string;
+}
+
+export interface MigrateResult {
+  applied: string[];
+  alreadyApplied: number;
+}
+
+/**
+ * `dir` is overridable for tests only; production always uses MIGRATIONS_DIR.
+ */
+export function runMigrations(
+  db: Database.Database,
+  dir: string = MIGRATIONS_DIR
+): MigrateResult {
   db.exec(`
-    CREATE TABLE IF NOT EXISTS _migrations (
-      id        INTEGER PRIMARY KEY AUTOINCREMENT,
-      name      TEXT    NOT NULL UNIQUE,
-      run_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version    TEXT PRIMARY KEY,
+      checksum   TEXT NOT NULL,
+      applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
     )
   `);
 
-  const applied = new Set(
-    (db.prepare("SELECT name FROM _migrations").all() as { name: string }[]).map(r => r.name)
+  if (!existsSync(dir)) {
+    throw new Error(`Migrations directory not found: ${dir}`);
+  }
+
+  const applied = new Map<string, AppliedMigration>(
+    (db.prepare("SELECT version, checksum, applied_at FROM schema_migrations").all() as AppliedMigration[])
+      .map(r => [r.version, r])
   );
 
-  const files = readdirSync(migrationsDir)
-    .filter(f => f.endsWith(".sql"))
-    .sort();
-
-  for (const file of files) {
-    if (applied.has(file)) continue;
-    const sql = readFileSync(join(migrationsDir, file), "utf8");
-    try {
-      db.exec(sql);
-      db.prepare("INSERT INTO _migrations (name) VALUES (?)").run(file);
-      console.log(`Migration applied: ${file}`);
-    } catch (err: unknown) {
-      // A failure inside an explicit BEGIN (the table-rebuild migrations)
-      // leaves the transaction open on this connection — roll it back so the
-      // DB isn't left mid-rebuild and later statements don't join it.
-      if (db.inTransaction) db.exec("ROLLBACK");
-      db.pragma("foreign_keys = ON"); // rebuilds toggle it off before BEGIN
-
-      // ONLY "duplicate column name" means already-applied (fresh installs
-      // whose schema.sql already contains the column an ALTER adds).
-      // "table ... already exists" must SURFACE: it signals a half-done
-      // rebuild, and marking it applied would hide real breakage.
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes("duplicate column name")) {
-        db.prepare("INSERT INTO _migrations (name) VALUES (?)").run(file);
-        console.log(`Migration skipped (column already present): ${file}`);
-      } else {
-        throw err;
-      }
+  const files = readdirSync(dir).filter(f => f.endsWith(".sql")).sort();
+  for (const f of files) {
+    if (!FILE_PATTERN.test(f)) {
+      throw new Error(`Migration filename must look like 001_init.sql — got "${f}"`);
     }
   }
+
+  const record = db.prepare(
+    "INSERT INTO schema_migrations (version, checksum) VALUES (?, ?)"
+  );
+  const result: MigrateResult = { applied: [], alreadyApplied: 0 };
+
+  for (const file of files) {
+    const sql = readFileSync(join(dir, file), "utf8");
+    const checksum = sha256(sql);
+    const prior = applied.get(file);
+
+    if (prior) {
+      if (prior.checksum !== checksum) {
+        throw new Error(
+          `Migration ${file} changed after it was applied ` +
+          `(recorded ${prior.checksum}, file is now ${checksum}). ` +
+          `Applied migrations are immutable — add a new migration instead.`
+        );
+      }
+      result.alreadyApplied++;
+      continue;
+    }
+
+    if (/^\s*(BEGIN|COMMIT|END)\s*(TRANSACTION)?\s*;/im.test(sql)) {
+      throw new Error(
+        `Migration ${file} contains its own BEGIN/COMMIT — the runner manages ` +
+        `the transaction. Remove them so a failure can roll back cleanly.`
+      );
+    }
+
+    try {
+      db.exec("BEGIN");
+      db.exec(sql);
+      record.run(file, checksum);
+      db.exec("COMMIT");
+      result.applied.push(file);
+      console.log(`[migrate] applied ${file}`);
+    } catch (err) {
+      if (db.inTransaction) db.exec("ROLLBACK");
+      throw new Error(`Migration ${file} failed: ${(err as Error).message}`);
+    }
+  }
+
+  return result;
+}
+
+/** Applied migrations, oldest first — handy for a health/debug endpoint. */
+export function migrationStatus(db: Database.Database): AppliedMigration[] {
+  const exists = db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
+  ).get();
+  if (!exists) return [];
+  return db.prepare(
+    "SELECT version, checksum, applied_at FROM schema_migrations ORDER BY version"
+  ).all() as AppliedMigration[];
 }
