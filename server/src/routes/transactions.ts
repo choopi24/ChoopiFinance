@@ -1,311 +1,225 @@
+/**
+ * The transaction ledger.
+ *
+ * The client always sends a POSITIVE amount and lets the type carry the
+ * direction — nobody typing "12.50" into a fee field on a phone should have to
+ * remember a minus sign. `signFor` applies the sign the schema's CHECK
+ * constraints demand. 'adjustment' is the one exception: it is a correcting
+ * entry, so its sign is meaningful and passes through untouched.
+ */
+
 import { Router } from "express";
 import { getDb } from "../db/init.js";
 import { requireAuth } from "../middleware/requireAuth.js";
-import { ok, fail } from "../middleware/respond.js";
-import { recomputeRealized } from "../services/fifo.js";
-import { validateTransactionPatch } from "./editValidation.js";
+import { ok } from "../middleware/respond.js";
+import { getAccount } from "../calc/index.js";
+import {
+  CONTRIBUTION_PARTS, CURRENCIES, FEE_KINDS, TX_TYPES,
+  absent, badRequest, date, enumOf, intParam, minorInt, notFound, num,
+  optEnumOf, optNum, optStr, qDate, qInt,
+} from "./_validate.js";
 
 export const transactionsRouter = Router();
 transactionsRouter.use(requireAuth);
 
-const MARKET_KINDS = new Set(["BUY", "SELL", "DIV"]);
-// UPDATE = balance snapshot; DEPOSIT = actual cash contribution (education/other P/L model)
-const MANUAL_KINDS = new Set(["UPDATE", "DEPOSIT"]);
-// rsu: SELLs go through here like any market asset; BUY lots normally come from the vesting engine.
-const MARKET_TYPES = new Set(["crypto", "stock", "etf", "rsu"]);
+type TxType = typeof TX_TYPES[number];
 
-// GET /api/transactions — paginated ledger
+const NEGATIVE: ReadonlySet<TxType> = new Set(["withdrawal", "buy", "fee"] as const);
+
+function signFor(type: TxType, magnitude: number): number {
+  if (type === "adjustment") return magnitude;
+  const abs = Math.abs(magnitude);
+  if (abs === 0) throw badRequest("amount_minor must not be zero");
+  return NEGATIVE.has(type) ? -abs : abs;
+}
+
+const SELECT = `
+  SELECT t.*, a.name AS account_name, a.category AS account_category,
+         h.symbol AS holding_symbol
+  FROM transactions t
+  JOIN accounts a ON a.id = t.account_id
+  LEFT JOIN holdings h ON h.id = t.holding_id
+`;
+
+/**
+ * GET /api/transactions — newest first, paged.
+ * `limit`/`offset` are mandatory in spirit: the account detail screen must
+ * never be handed a 500-row dump.
+ */
 transactionsRouter.get("/", (req, res) => {
-  try {
-    const db = getDb();
-    const page     = Math.max(1, Number(req.query.page ?? 1));
-    const perPage  = Math.min(100, Math.max(1, Number(req.query.per_page ?? 20)));
-    const offset   = (page - 1) * perPage;
-    const invId    = req.query.investment_id ? Number(req.query.investment_id) : null;
-    const kind     = req.query.kind as string | undefined;
-    const from     = req.query.from as string | undefined;
-    const to       = req.query.to   as string | undefined;
+  const db = getDb();
+  const where: string[] = [];
+  const params: Record<string, unknown> = {};
 
-    const conditions: string[] = ["t.user_id = ?"];
-    const params: unknown[] = [req.user!.id];
-
-    if (invId)  { conditions.push("t.investment_id = ?"); params.push(invId); }
-    if (kind)   { conditions.push("t.kind = ?");          params.push(kind); }
-    if (from)   { conditions.push("t.occurred_at >= ?");  params.push(from); }
-    if (to)     { conditions.push("t.occurred_at <= ?");  params.push(to); }
-
-    const where = conditions.join(" AND ");
-
-    const total = (db.prepare(
-      `SELECT COUNT(*) as n FROM transactions t WHERE ${where}`
-    ).get(...params) as { n: number }).n;
-
-    const rows = db.prepare(
-      `SELECT t.*, i.name AS investment_name, i.type AS investment_type, i.ticker
-       FROM transactions t
-       JOIN investments i ON i.id = t.investment_id
-       WHERE ${where}
-       ORDER BY t.occurred_at DESC, t.id DESC
-       LIMIT ? OFFSET ?`
-    ).all(...params, perPage, offset);
-
-    ok(res, { data: rows, total, page, per_page: perPage });
-  } catch (e) {
-    fail(res, (e as Error).message, 500);
+  if (req.query.account_id) {
+    params.account_id = intParam(req.query.account_id, "account_id");
+    where.push("t.account_id = @account_id");
   }
+  if (req.query.holding_id) {
+    params.holding_id = intParam(req.query.holding_id, "holding_id");
+    where.push("t.holding_id = @holding_id");
+  }
+  if (req.query.type) {
+    const types = String(req.query.type).split(",");
+    for (const t of types) {
+      if (!TX_TYPES.includes(t as TxType)) throw badRequest(`Unknown type "${t}"`);
+    }
+    where.push(`t.type IN (${types.map((_, i) => `@type${i}`).join(", ")})`);
+    types.forEach((t, i) => { params[`type${i}`] = t; });
+  }
+  if (req.query.from) { params.from = qDate(req, "from"); where.push("t.date >= @from"); }
+  if (req.query.to)   { params.to   = qDate(req, "to");   where.push("t.date <= @to"); }
+
+  const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const limit = qInt(req, "limit", 50, 500);
+  const offset = qInt(req, "offset", 0, 1_000_000);
+
+  // The clause only ever references `t.`, so the count can skip the joins.
+  const total = (db.prepare(
+    `SELECT COUNT(*) n FROM transactions t ${clause}`
+  ).get(params) as { n: number }).n;
+
+  const rows = db.prepare(
+    `${SELECT} ${clause} ORDER BY t.date DESC, t.id DESC LIMIT @limit OFFSET @offset`
+  ).all({ ...params, limit, offset });
+
+  ok(res, { total, limit, offset, has_more: offset + rows.length < total, transactions: rows });
 });
 
-// POST /api/transactions — create BUY / SELL / DIV / UPDATE
-transactionsRouter.post("/", async (req, res) => {
-  try {
-    const db = getDb();
-    const {
-      investment_id, kind, units, price_per_unit, total_amount,
-      currency = "NIS", occurred_at, notes,
-      fx_rate_at_buy, force_separate = false,
-    } = req.body as Record<string, unknown>;
+function buildTx(b: Record<string, unknown>, accountCurrency: string) {
+  const type = enumOf(b, "type", TX_TYPES);
+  const isTrade = type === "buy" || type === "sell";
 
-    if (!investment_id || !kind || !currency || !occurred_at) {
-      return fail(res, "investment_id, kind, currency, occurred_at are required");
-    }
-
-    const inv = db.prepare(
-      "SELECT * FROM investments WHERE id = ? AND user_id = ? AND deleted_at IS NULL"
-    ).get(investment_id, req.user!.id) as any;
-    if (!inv) return fail(res, "Investment not found", 404);
-
-    const isMarket = MARKET_TYPES.has(inv.type);
-
-    // Validate kind matches investment type
-    if (isMarket && MANUAL_KINDS.has(kind as string)) {
-      return fail(res, `${inv.type} investments use BUY / SELL / DIV, not ${kind}`);
-    }
-    if (!isMarket && MARKET_KINDS.has(kind as string)) {
-      return fail(res, `${inv.type} investments use UPDATE / DEPOSIT, not ${kind}`);
-    }
-
-    // Normalised, possibly-derived position fields.
-    let u = units != null && units !== "" ? Number(units) : null;
-    let pUnit = price_per_unit != null && price_per_unit !== "" ? Number(price_per_unit) : null;
-    let txCurrency = currency as string;
-    let effectiveTotal = total_amount != null ? Number(total_amount) : null;
-    if (effectiveTotal == null && u != null && pUnit != null) {
-      effectiveTotal = u * pUnit;
-    }
-
-    // Amount-only entry ("I put 5,000 into VOO") is recorded AT COST: units and
-    // price stay null and the amount becomes the cost basis. Deriving units from
-    // a live price is gone with the price providers — enter units + price yourself
-    // if you want unit-level tracking.
-    const amountOnly = u == null && pUnit == null && effectiveTotal != null && effectiveTotal > 0;
-    const unitsOnly  = u != null && u > 0 && pUnit == null && effectiveTotal == null;
-    if (isMarket && kind === "BUY" && unitsOnly) {
-      return fail(res, "Enter the price per unit (or the total amount you paid) — there is no price source to value these units for you.");
-    }
-    void amountOnly; // recorded at cost as entered
-
-    if (effectiveTotal == null || isNaN(effectiveTotal)) {
-      return fail(res, "total_amount or (units + price_per_unit) required");
-    }
-
-    // ── Merge-candidate detection for BUY ───────────────────────────────────
-    let merge_candidate: unknown = null;
-    if (kind === "BUY" && !force_separate && inv.ticker) {
-      const existing = db.prepare(
-        `SELECT id, name, ticker, type, created_at FROM investments
-         WHERE user_id = ? AND ticker = ? AND type = ? AND id != ?
-           AND deleted_at IS NULL AND closed_at IS NULL`
-      ).get(req.user!.id, inv.ticker, inv.type, investment_id);
-      if (existing) merge_candidate = existing;
-    }
-
-    const result = db.prepare(
-      `INSERT INTO transactions
-         (investment_id, user_id, kind, units, price_per_unit, total_amount,
-          currency, occurred_at, notes, fx_rate_at_buy)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      investment_id, req.user!.id, kind,
-      u ?? null, pUnit ?? null, effectiveTotal,
-      txCurrency, occurred_at, notes ?? null,
-      kind === "BUY" ? (fx_rate_at_buy ?? null) : null
-    );
-
-    const txId = result.lastInsertRowid as number;
-
-    // Recompute FIFO for SELL (sets realized_pl + updates closed_at)
-    if (isMarket && (kind === "SELL" || kind === "BUY")) {
-      recomputeRealized(db, Number(investment_id));
-    }
-
-    const tx = db.prepare("SELECT * FROM transactions WHERE id = ?").get(txId);
-
-    // Snapshot portfolio after every market transaction so the history chart has fine-grained data
-
-    ok(res, { transaction: tx, merge_candidate }, 201);
-  } catch (e) {
-    fail(res, (e as Error).message, 500);
+  if (type === "fee" && absent(b, "fee_kind")) {
+    throw badRequest("fee_kind is required for a fee — fee drag can only be attributed if you say which kind");
   }
+
+  return {
+    date: date(b, "date"),
+    type,
+    amount_minor: signFor(type, minorInt(b, "amount_minor")),
+    holding_id: isTrade ? intParam(b.holding_id, "holding_id") : null,
+    quantity: isTrade ? num(b, "quantity", { min: Number.MIN_VALUE }) : null,
+    price_minor: isTrade ? minorInt(b, "price_minor", { min: 0 }) : null,
+    contribution_part: type === "deposit" ? optEnumOf(b, "contribution_part", CONTRIBUTION_PARTS) : null,
+    fee_kind: type === "fee" ? enumOf(b, "fee_kind", FEE_KINDS) : null,
+    currency: absent(b, "currency") ? accountCurrency : enumOf(b, "currency", CURRENCIES),
+    note: optStr(b, "note", { max: 500 }),
+  };
+}
+
+/** POST /api/transactions */
+transactionsRouter.post("/", (req, res) => {
+  const db = getDb();
+  const b = req.body as Record<string, unknown>;
+  const accountId = intParam(b.account_id, "account_id");
+  const account = getAccount(db, accountId);
+  if (!account) throw notFound("Account");
+
+  const tx = buildTx(b, account.currency);
+  if (tx.holding_id != null) {
+    const h = db.prepare("SELECT account_id FROM holdings WHERE id = ?").get(tx.holding_id) as
+      { account_id: number } | undefined;
+    if (!h) throw notFound("Holding");
+    if (h.account_id !== accountId) throw badRequest("That holding belongs to a different account");
+  }
+
+  const r = db.prepare(
+    `INSERT INTO transactions (account_id, holding_id, date, type, amount_minor, quantity,
+       price_minor, contribution_part, fee_kind, currency, source, note)
+     VALUES (@account_id, @holding_id, @date, @type, @amount_minor, @quantity,
+       @price_minor, @contribution_part, @fee_kind, @currency, 'manual', @note)`
+  ).run({ ...tx, account_id: accountId });
+
+  ok(res, db.prepare(`${SELECT} WHERE t.id = ?`).get(r.lastInsertRowid), 201);
 });
 
-// POST /api/transactions/bulk — insert multiple historical transactions in one shot
-// Body: { investment_id: number; transactions: BulkRow[] }
-// Validates, inserts all rows in a single SQLite transaction, then recomputeRealized.
-transactionsRouter.post("/bulk", (req, res) => {
-  try {
-    const db = getDb();
-    const { investment_id, transactions: rows } = req.body as {
-      investment_id: number;
-      transactions: Array<{
-        kind: string;
-        units?: number | null;
-        price_per_unit?: number | null;
-        total_amount?: number | null;
-        currency?: string;
-        occurred_at: string;
-        notes?: string;
-        fx_rate_at_buy?: number | null;
-      }>;
-    };
-
-    if (!investment_id || !Array.isArray(rows) || rows.length === 0) {
-      return fail(res, "investment_id and a non-empty transactions array are required");
-    }
-
-    const inv = db.prepare(
-      "SELECT * FROM investments WHERE id = ? AND user_id = ? AND deleted_at IS NULL"
-    ).get(investment_id, req.user!.id) as any;
-    if (!inv) return fail(res, "Investment not found", 404);
-
-    const isMarket = MARKET_TYPES.has(inv.type);
-
-    // Validate all rows before touching the DB
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      if (!row.kind) return fail(res, `Row ${i + 1}: kind is required`);
-      if (isMarket && MANUAL_KINDS.has(row.kind)) {
-        return fail(res, `Row ${i + 1}: ${inv.type} investments use BUY / SELL / DIV`);
-      }
-      if (!isMarket && MARKET_KINDS.has(row.kind)) {
-        return fail(res, `Row ${i + 1}: ${inv.type} investments use UPDATE / DEPOSIT`);
-      }
-      if (!row.occurred_at) return fail(res, `Row ${i + 1}: occurred_at is required`);
-      if (new Date(row.occurred_at) > new Date()) {
-        return fail(res, `Row ${i + 1}: date cannot be in the future`);
-      }
-    }
-
-    const insertStmt = db.prepare(
-      `INSERT INTO transactions
-         (investment_id, user_id, kind, units, price_per_unit, total_amount,
-          currency, occurred_at, notes, fx_rate_at_buy)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    );
-
-    const runBulk = db.transaction(() => {
-      for (const row of rows) {
-        let total = row.total_amount != null ? Number(row.total_amount) : null;
-        if (total == null && row.units != null && row.price_per_unit != null) {
-          total = Number(row.units) * Number(row.price_per_unit);
-        }
-        if (total == null || isNaN(total)) {
-          throw new Error("Each row needs total_amount or both units and price_per_unit");
-        }
-        insertStmt.run(
-          investment_id, req.user!.id, row.kind,
-          row.units ?? null, row.price_per_unit ?? null, total,
-          row.currency ?? "NIS",
-          row.occurred_at,
-          row.notes ?? null,
-          row.kind === "BUY" ? (row.fx_rate_at_buy ?? null) : null
-        );
-      }
-    });
-    runBulk();
-
-    if (isMarket) recomputeRealized(db, Number(investment_id));
-
-    ok(res, { inserted: rows.length }, 201);
-  } catch (e) {
-    fail(res, (e as Error).message, 500);
-  }
-});
-
-// PATCH /api/transactions/:id — partial edit; validates, keeps total_amount
-// consistent with units × price on BUY/SELL, then recomputes FIFO downstream.
+/**
+ * PATCH /api/transactions/:id — the inline-edit endpoint.
+ *
+ * Rebuilt from the merged row rather than patched column-by-column: the
+ * schema's cross-column CHECKs (a buy needs units AND a price) can only be
+ * validated against the whole row, so a partial update has to be resolved to a
+ * complete one first.
+ */
 transactionsRouter.patch("/:id", (req, res) => {
-  try {
-    const db = getDb();
-    const txId = Number(req.params.id);
-    const tx = db.prepare(
-      "SELECT * FROM transactions WHERE id = ? AND user_id = ?"
-    ).get(txId, req.user!.id) as any;
-    if (!tx) return fail(res, "Transaction not found", 404);
+  const db = getDb();
+  const id = intParam(req.params.id);
+  const existing = db.prepare("SELECT * FROM transactions WHERE id = ?").get(id) as
+    Record<string, unknown> | undefined;
+  if (!existing) throw notFound("Transaction");
 
-    const patch = validateTransactionPatch(tx, req.body as Record<string, unknown>);
-    if ("error" in patch) return fail(res, patch.error);
+  const b = req.body as Record<string, unknown>;
+  const accountId = absent(b, "account_id") ? existing.account_id as number : intParam(b.account_id, "account_id");
+  const account = getAccount(db, accountId);
+  if (!account) throw notFound("Account");
 
-    const keys = Object.keys(patch.fields);
-    db.prepare(
-      `UPDATE transactions SET ${keys.map(k => `${k} = ?`).join(", ")} WHERE id = ?`
-    ).run(...keys.map(k => patch.fields[k]), txId);
+  // Merge, but send the stored amount back through as a magnitude so signFor
+  // stays the single authority on direction.
+  const merged: Record<string, unknown> = {
+    ...existing,
+    amount_minor: Math.abs(existing.amount_minor as number),
+    ...b,
+  };
+  const tx = buildTx(merged, account.currency);
 
-    const inv = db.prepare("SELECT type FROM investments WHERE id = ?").get(tx.investment_id) as any;
-    if (MARKET_TYPES.has(inv.type)) {
-      recomputeRealized(db, tx.investment_id);
-    }
+  db.prepare(
+    `UPDATE transactions SET account_id = @account_id, holding_id = @holding_id, date = @date,
+       type = @type, amount_minor = @amount_minor, quantity = @quantity, price_minor = @price_minor,
+       contribution_part = @contribution_part, fee_kind = @fee_kind, currency = @currency, note = @note
+     WHERE id = @id`
+  ).run({ ...tx, account_id: accountId, id });
 
-
-    const updated = db.prepare("SELECT * FROM transactions WHERE id = ?").get(txId);
-    ok(res, updated);
-  } catch (e) {
-    fail(res, (e as Error).message, 500);
-  }
+  ok(res, db.prepare(`${SELECT} WHERE t.id = ?`).get(id));
 });
 
-// GET /api/transactions/:id/fifo-affected — count downstream SELLs affected by editing this tx
-transactionsRouter.get("/:id/fifo-affected", (req, res) => {
-  try {
-    const db = getDb();
-    const txId = Number(req.params.id);
-    const tx = db.prepare(
-      "SELECT * FROM transactions WHERE id = ? AND user_id = ?"
-    ).get(txId, req.user!.id) as any;
-    if (!tx) return fail(res, "Transaction not found", 404);
+/**
+ * POST /api/transactions/restore — the other half of undo.
+ *
+ * Re-inserts a row exactly as DELETE returned it, provenance included, so
+ * undoing the deletion of an auto-generated salary deposit gives back an
+ * auto-generated deposit rather than a manual look-alike. The unique index on
+ * (recurring_rule_id, date) still stops a rule from double-posting.
+ */
+transactionsRouter.post("/restore", (req, res) => {
+  const db = getDb();
+  const b = req.body as Record<string, unknown>;
+  const accountId = intParam(b.account_id, "account_id");
+  if (!getAccount(db, accountId)) throw notFound("Account");
 
-    // Count SELLs on the same investment that occurred after this transaction
-    const row = db.prepare(
-      `SELECT COUNT(*) as n FROM transactions
-       WHERE investment_id = ? AND kind = 'SELL' AND occurred_at >= ?`
-    ).get(tx.investment_id, tx.occurred_at) as { n: number };
+  const ruleId = b.recurring_rule_id == null ? null : intParam(b.recurring_rule_id, "recurring_rule_id");
+  const row = {
+    account_id: accountId,
+    holding_id: b.holding_id == null ? null : intParam(b.holding_id, "holding_id"),
+    date: date(b, "date"),
+    type: enumOf(b, "type", TX_TYPES),
+    amount_minor: minorInt(b, "amount_minor"),
+    quantity: optNum(b, "quantity"),
+    price_minor: b.price_minor == null ? null : minorInt(b, "price_minor", { min: 0 }),
+    contribution_part: optEnumOf(b, "contribution_part", CONTRIBUTION_PARTS),
+    fee_kind: optEnumOf(b, "fee_kind", FEE_KINDS),
+    currency: enumOf(b, "currency", CURRENCIES),
+    source: ruleId == null ? "manual" : "recurring",
+    recurring_rule_id: ruleId,
+    note: optStr(b, "note", { max: 500 }),
+  };
 
-    ok(res, { id: txId, affected_sells: row.n });
-  } catch (e) {
-    fail(res, (e as Error).message, 500);
-  }
+  const r = db.prepare(
+    `INSERT INTO transactions (account_id, holding_id, date, type, amount_minor, quantity,
+       price_minor, contribution_part, fee_kind, currency, source, recurring_rule_id, note)
+     VALUES (@account_id, @holding_id, @date, @type, @amount_minor, @quantity,
+       @price_minor, @contribution_part, @fee_kind, @currency, @source, @recurring_rule_id, @note)`
+  ).run(row);
+
+  ok(res, db.prepare(`${SELECT} WHERE t.id = ?`).get(r.lastInsertRowid), 201);
 });
 
-// DELETE /api/transactions/:id — delete + recompute downstream
+/** DELETE /api/transactions/:id — returns the row so the client can undo it. */
 transactionsRouter.delete("/:id", (req, res) => {
-  try {
-    const db = getDb();
-    const txId = Number(req.params.id);
-    const tx = db.prepare(
-      "SELECT * FROM transactions WHERE id = ? AND user_id = ?"
-    ).get(txId, req.user!.id) as any;
-    if (!tx) return fail(res, "Transaction not found", 404);
-
-    const investmentId: number = tx.investment_id;
-    db.prepare("DELETE FROM transactions WHERE id = ?").run(txId);
-
-    const inv = db.prepare("SELECT type FROM investments WHERE id = ?").get(investmentId) as any;
-    if (inv && MARKET_TYPES.has(inv.type)) {
-      recomputeRealized(db, investmentId);
-    }
-
-
-    ok(res, { id: txId });
-  } catch (e) {
-    fail(res, (e as Error).message, 500);
-  }
+  const db = getDb();
+  const id = intParam(req.params.id);
+  const existing = db.prepare("SELECT * FROM transactions WHERE id = ?").get(id);
+  if (!existing) throw notFound("Transaction");
+  db.prepare("DELETE FROM transactions WHERE id = ?").run(id);
+  ok(res, { deleted: existing });
 });

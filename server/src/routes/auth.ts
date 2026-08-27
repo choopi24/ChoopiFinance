@@ -1,8 +1,19 @@
+/**
+ * Login. Deliberately thin: one user, one cookie.
+ *
+ * `GET /status` exists so the client can tell "nobody has registered yet" from
+ * "you are signed out" and show the right screen without a failed request.
+ */
+
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import bcrypt from "bcrypt";
 import { getDb } from "../db/init.js";
-import { signToken, setAuthCookie, clearAuthCookie, requireAuth } from "../middleware/requireAuth.js";
+import { ok } from "../middleware/respond.js";
+import {
+  signToken, setAuthCookie, clearAuthCookie, requireAuth,
+} from "../middleware/requireAuth.js";
+import { HttpError, badRequest } from "./_validate.js";
 
 export const authRouter = Router();
 
@@ -17,89 +28,80 @@ const authLimiter = rateLimit({
   message: { error: "Too many attempts, please try again later" },
 });
 
-// POST /api/auth/register
-authRouter.post("/register", authLimiter, async (req, res) => {
-  const { username, password } = req.body as { username?: string; password?: string };
+const userCount = (): number =>
+  (getDb().prepare("SELECT COUNT(*) n FROM users").get() as { n: number }).n;
 
-  if (!username || typeof username !== "string" || username.trim().length < 2) {
-    res.status(400).json({ error: "Username must be at least 2 characters" });
-    return;
-  }
-  if (!password || typeof password !== "string" || password.length < 8) {
-    res.status(400).json({ error: "Password must be at least 8 characters" });
-    return;
-  }
-
-  const db = getDb();
-  const existing = db.prepare("SELECT id FROM users WHERE username = ?").get(username.trim());
-  if (existing) {
-    res.status(409).json({ error: "Username already taken" });
-    return;
-  }
-
-  const password_hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
-  const result = db
-    .prepare("INSERT INTO users (username, password_hash) VALUES (?, ?)")
-    .run(username.trim(), password_hash);
-
-  const userId = result.lastInsertRowid as number;
-  const token = signToken(userId);
-  setAuthCookie(res, token);
-
-  const user = db
-    .prepare("SELECT id, username, display_currency FROM users WHERE id = ?")
-    .get(userId);
-
-  res.status(201).json({ user });
+/** GET /api/auth/status — no auth required. */
+authRouter.get("/status", (req, res) => {
+  ok(res, { setup_required: userCount() === 0, authenticated: Boolean(req.cookies?.cf_token) });
 });
 
-// POST /api/auth/login
-authRouter.post("/login", authLimiter, async (req, res) => {
-  const { username, password, stay_signed_in = false } = req.body as {
-    username?: string; password?: string; stay_signed_in?: boolean;
-  };
+/**
+ * POST /api/auth/register — allowed only while no user exists.
+ *
+ * This app is reachable by everything on the LAN, so leaving registration open
+ * would mean any device on the network could create itself an account.
+ */
+authRouter.post("/register", authLimiter, async (req, res, next) => {
+  try {
+    const { username, password } = req.body as { username?: string; password?: string };
+    if (userCount() > 0) {
+      throw new HttpError("This tracker already has an account — sign in instead", 409);
+    }
+    if (!username || typeof username !== "string" || username.trim().length < 2) {
+      throw badRequest("Username must be at least 2 characters");
+    }
+    if (!password || typeof password !== "string" || password.length < 8) {
+      throw badRequest("Password must be at least 8 characters");
+    }
 
-  if (!username || !password) {
-    res.status(400).json({ error: "Username and password required" });
-    return;
+    const db = getDb();
+    const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+    const r = db.prepare("INSERT INTO users (username, password_hash) VALUES (?, ?)")
+      .run(username.trim(), hash);
+
+    const id = r.lastInsertRowid as number;
+    setAuthCookie(res, signToken(id, true), true);
+    ok(res, { user: { id, username: username.trim() } }, 201);
+  } catch (e) {
+    next(e);
   }
-
-  const db = getDb();
-  const row = db
-    .prepare("SELECT id, username, password_hash, display_currency, stay_signed_in FROM users WHERE username = ?")
-    .get(username.trim()) as { id: number; username: string; password_hash: string; display_currency: string; stay_signed_in: number } | undefined;
-
-  if (!row) {
-    res.status(401).json({ error: "Invalid credentials" });
-    return;
-  }
-
-  const matched = await bcrypt.compare(password, row.password_hash);
-  if (!matched) {
-    res.status(401).json({ error: "Invalid credentials" });
-    return;
-  }
-
-  // Use the incoming flag OR the stored preference, whichever is true
-  const extendedSession = stay_signed_in || Boolean(row.stay_signed_in);
-
-  db.prepare("UPDATE users SET last_login_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?").run(row.id);
-
-  const token = signToken(row.id, extendedSession);
-  setAuthCookie(res, token, extendedSession);
-
-  res.json({
-    user: { id: row.id, username: row.username, display_currency: row.display_currency },
-  });
 });
 
-// POST /api/auth/logout
+/** POST /api/auth/login */
+authRouter.post("/login", authLimiter, async (req, res, next) => {
+  try {
+    const { username, password, stay_signed_in = true } = req.body as {
+      username?: string; password?: string; stay_signed_in?: boolean;
+    };
+    if (!username || !password) throw badRequest("Username and password required");
+
+    const db = getDb();
+    const row = db.prepare("SELECT id, username, password_hash FROM users WHERE username = ?")
+      .get(String(username).trim()) as
+      { id: number; username: string; password_hash: string } | undefined;
+
+    // Same message either way — a different one for an unknown username would
+    // tell anyone on the LAN which names exist.
+    if (!row || !(await bcrypt.compare(password, row.password_hash))) {
+      throw new HttpError("Invalid credentials", 401);
+    }
+
+    db.prepare("UPDATE users SET last_login_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?")
+      .run(row.id);
+
+    setAuthCookie(res, signToken(row.id, stay_signed_in), stay_signed_in);
+    ok(res, { user: { id: row.id, username: row.username } });
+  } catch (e) {
+    next(e);
+  }
+});
+
 authRouter.post("/logout", (_req, res) => {
   clearAuthCookie(res);
-  res.json({ ok: true });
+  ok(res, { ok: true });
 });
 
-// GET /api/auth/me
 authRouter.get("/me", requireAuth, (req, res) => {
-  res.json({ user: req.user });
+  ok(res, { user: req.user });
 });

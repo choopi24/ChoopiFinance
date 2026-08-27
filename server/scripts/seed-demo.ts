@@ -381,26 +381,11 @@ const seed = db.transaction(() => {
       isPast ? Math.round(units * 0.35) : 0,
       isPast ? "vested" : "scheduled"
     );
-    // A vested tranche is compensation you were taxed on, so its net value is
-    // YOUR money: record it as a deposit, then a buy converting it into shares
-    // at the vest price (the cost basis). Cash nets to zero; the shares sold to
-    // cover withholding never arrive, so only the net units are bought.
-    if (isPast && priceMajor != null) {
-      const soldForTax = Math.round(units * 0.35);
-      const net = units - soldForTax;
-      const netValue = minor(net * priceMajor);
-      tx({
-        account_id: rsuAccount, date: vestDate, type: "deposit",
-        amount_minor: netValue, currency: "USD",
-        note: `RSU vest — ${units} units, ${soldForTax} withheld for tax`,
-      });
-      tx({
-        account_id: rsuAccount, holding_id: acme, date: vestDate, type: "buy",
-        quantity: net, price_minor: minor(priceMajor),
-        amount_minor: -netValue, currency: "USD",
-        note: `${net} net units at $${priceMajor.toFixed(2)}`,
-      });
-    }
+    // NOTE: no transactions are written for a vest. The calculation layer rolls
+    // vested units (net of shares sold for tax) into the linked holding straight
+    // from rsu_vests — see calc/engine.unitsHeldOn. Writing a buy here as well
+    // would count the same shares twice. Principal follows the
+    // rsu_principal_at_vest_price setting: zero cost by default.
   }
 });
 seed();

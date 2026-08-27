@@ -1,238 +1,222 @@
+/**
+ * App settings, plus whole-database export / import / backup.
+ *
+ * Settings live in the `settings` key/value table, not on the user row: this is
+ * a single-user app and "which currency do I read totals in" is a property of
+ * the app, not of a login.
+ */
+
 import { Router } from "express";
 import bcrypt from "bcrypt";
 import { getDb } from "../db/init.js";
 import { requireAuth } from "../middleware/requireAuth.js";
-import { ok, fail } from "../middleware/respond.js";
-import { runBackup } from "../services/backup.js";
-import { buildExport, importUserData, validateImportPayload, type ExportPayload } from "../services/importExport.js";
+import { ok } from "../middleware/respond.js";
+import { runBackup, listBackups } from "../services/backup.js";
+import { badRequest, HttpError } from "./_validate.js";
 
 export const settingsRouter = Router();
 settingsRouter.use(requireAuth);
 
-const BCRYPT_ROUNDS = 12;
-
-type UserRow = {
-  display_currency: string;
-  fx_override: number | null;
-  theme: string;
-  display_name: string | null;
-  stay_signed_in: number;
-  show_on_lock_screen: number;
+/**
+ * The only keys that may be written, each with its own validator. A settings
+ * table anyone can write arbitrary keys into becomes an untyped global object
+ * within a month.
+ */
+const SETTINGS: Record<string, { fallback: string; validate: (v: string) => boolean; label: string }> = {
+  display_currency: {
+    fallback: "ILS", label: "Display currency",
+    validate: v => v === "ILS" || v === "USD",
+  },
+  theme: {
+    fallback: "system", label: "Theme",
+    validate: v => ["light", "dark", "system"].includes(v),
+  },
+  rsu_principal_basis: {
+    fallback: "zero_cost", label: "RSU cost basis",
+    validate: v => v === "zero_cost" || v === "vest_price",
+  },
+  stale_data_days: {
+    fallback: "45", label: "Stale data threshold (days)",
+    validate: v => Number.isInteger(Number(v)) && Number(v) >= 1 && Number(v) <= 365,
+  },
+  stale_fx_days: {
+    fallback: "45", label: "Stale FX threshold (days)",
+    validate: v => Number.isInteger(Number(v)) && Number(v) >= 1 && Number(v) <= 365,
+  },
+  default_account_id: {
+    fallback: "", label: "Quick-add default account",
+    validate: v => v === "" || (Number.isInteger(Number(v)) && Number(v) > 0),
+  },
 };
 
-// GET /api/settings
-settingsRouter.get("/", (req, res) => {
-  try {
-    const db = getDb();
-    const user = db
-      .prepare<[number], UserRow>(
-        `SELECT display_currency, fx_override, theme, display_name,
-                stay_signed_in, show_on_lock_screen
-         FROM users WHERE id = ?`
-      )
-      .get(req.user!.id);
-    ok(res, user ?? {});
-  } catch (e) {
-    fail(res, (e as Error).message, 500);
-  }
+function readAll() {
+  const db = getDb();
+  const rows = db.prepare("SELECT key, value FROM settings").all() as { key: string; value: string }[];
+  const stored = new Map(rows.map(r => [r.key, r.value]));
+  const out: Record<string, string> = {};
+  for (const [key, spec] of Object.entries(SETTINGS)) out[key] = stored.get(key) ?? spec.fallback;
+  return out;
+}
+
+/** GET /api/settings */
+settingsRouter.get("/", (_req, res) => {
+  ok(res, { settings: readAll(), backups: listBackups().slice(0, 10) });
 });
 
-// PATCH /api/settings/fx-override — set or clear manual FX rate
-settingsRouter.patch("/fx-override", (req, res) => {
-  try {
-    const db = getDb();
-    const { rate } = req.body as { rate: number | null | undefined };
+/** PATCH /api/settings — accepts any subset of the known keys. */
+settingsRouter.patch("/", (req, res) => {
+  const db = getDb();
+  const body = req.body as Record<string, unknown>;
+  const write = db.prepare(
+    `INSERT INTO settings (key, value, updated_at)
+     VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+     ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+  );
 
-    if (rate !== null && rate !== undefined) {
-      const n = Number(rate);
-      if (isNaN(n) || n <= 0 || n > 100) {
-        return fail(res, "rate must be a positive number (e.g. 3.72)");
-      }
-      db.prepare("UPDATE users SET fx_override = ? WHERE id = ?").run(n, req.user!.id);
-    } else {
-      db.prepare("UPDATE users SET fx_override = NULL WHERE id = ?").run(req.user!.id);
+  const applied: string[] = [];
+  db.transaction(() => {
+    for (const [key, raw] of Object.entries(body)) {
+      const spec = SETTINGS[key];
+      if (!spec) throw badRequest(`Unknown setting "${key}"`);
+      const value = raw == null ? "" : String(raw);
+      if (!spec.validate(value)) throw badRequest(`Invalid value for ${spec.label}: "${value}"`);
+      write.run(key, value);
+      applied.push(key);
     }
+  })();
 
-    const updated = db
-      .prepare<[number], { display_currency: string; fx_override: number | null }>(
-        "SELECT display_currency, fx_override FROM users WHERE id = ?"
-      )
-      .get(req.user!.id);
-    ok(res, updated);
-  } catch (e) {
-    fail(res, (e as Error).message, 500);
-  }
+  ok(res, { settings: readAll(), applied });
 });
 
-// PATCH /api/settings/display-currency
-settingsRouter.patch("/display-currency", (req, res) => {
-  try {
-    const db = getDb();
-    const { currency } = req.body as { currency?: string };
-    if (currency !== "NIS" && currency !== "USD") {
-      return fail(res, "currency must be NIS or USD");
-    }
-    db.prepare("UPDATE users SET display_currency = ? WHERE id = ?").run(currency, req.user!.id);
-    ok(res, { display_currency: currency });
-  } catch (e) {
-    fail(res, (e as Error).message, 500);
-  }
-});
-
-// PATCH /api/settings/theme
-settingsRouter.patch("/theme", (req, res) => {
-  try {
-    const db = getDb();
-    const { theme } = req.body as { theme?: string };
-    if (theme !== "light" && theme !== "dark" && theme !== "system") {
-      return fail(res, "theme must be light, dark, or system");
-    }
-    db.prepare("UPDATE users SET theme = ? WHERE id = ?").run(theme, req.user!.id);
-    ok(res, { theme });
-  } catch (e) {
-    fail(res, (e as Error).message, 500);
-  }
-});
-
-// PATCH /api/settings/display-name
-settingsRouter.patch("/display-name", (req, res) => {
-  try {
-    const db = getDb();
-    const { display_name } = req.body as { display_name?: string | null };
-    const name = display_name?.trim() || null;
-    if (name && name.length > 80) return fail(res, "Display name too long (max 80 chars)");
-    db.prepare("UPDATE users SET display_name = ? WHERE id = ?").run(name, req.user!.id);
-    ok(res, { display_name: name });
-  } catch (e) {
-    fail(res, (e as Error).message, 500);
-  }
-});
-
-// PATCH /api/settings/password
-settingsRouter.patch("/password", async (req, res) => {
+/** PATCH /api/settings/password */
+settingsRouter.patch("/password", async (req, res, next) => {
   try {
     const db = getDb();
     const { current_password, new_password } = req.body as {
-      current_password?: string;
-      new_password?: string;
+      current_password?: string; new_password?: string;
     };
-
     if (!current_password || !new_password) {
-      return fail(res, "current_password and new_password are required");
+      throw badRequest("current_password and new_password are required");
     }
-    if (new_password.length < 8) {
-      return fail(res, "New password must be at least 8 characters");
+    if (new_password.length < 8) throw badRequest("New password must be at least 8 characters");
+
+    const row = db.prepare("SELECT password_hash FROM users WHERE id = ?")
+      .get(req.user!.id) as { password_hash: string } | undefined;
+    if (!row) throw new HttpError("User not found", 404);
+    if (!(await bcrypt.compare(current_password, row.password_hash))) {
+      throw new HttpError("Current password is incorrect", 403);
     }
 
-    const row = db
-      .prepare<[number], { password_hash: string }>("SELECT password_hash FROM users WHERE id = ?")
-      .get(req.user!.id);
-    if (!row) return fail(res, "User not found", 404);
-
-    const matched = await bcrypt.compare(current_password, row.password_hash);
-    if (!matched) return fail(res, "Current password is incorrect", 403);
-
-    const new_hash = await bcrypt.hash(new_password, BCRYPT_ROUNDS);
-    db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(new_hash, req.user!.id);
+    db.prepare("UPDATE users SET password_hash = ? WHERE id = ?")
+      .run(await bcrypt.hash(new_password, 12), req.user!.id);
     ok(res, { ok: true });
   } catch (e) {
-    fail(res, (e as Error).message, 500);
+    next(e);
   }
 });
 
-// PATCH /api/settings/preferences — batch-update boolean preferences
-settingsRouter.patch("/preferences", (req, res) => {
+// ── whole-ledger export / import ─────────────────────────────────────────────
+
+const LEDGER_TABLES = [
+  "accounts", "holdings", "prices", "recurring_rules", "transactions",
+  "valuations", "fx_rates", "rsu_grants", "rsu_vests",
+] as const;
+
+/** GET /api/settings/export — a complete, re-importable JSON snapshot. */
+settingsRouter.get("/export", (_req, res) => {
+  const db = getDb();
+  const tables: Record<string, unknown[]> = {};
+  for (const t of LEDGER_TABLES) tables[t] = db.prepare(`SELECT * FROM ${t}`).all();
+
+  res.setHeader("Content-Type", "application/json");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="choopi-${new Date().toISOString().slice(0, 10)}.json"`
+  );
+  res.json({
+    format: "choopi-ledger",
+    schema_version: 3,
+    exported_at: new Date().toISOString(),
+    settings: readAll(),
+    tables,
+  });
+});
+
+/**
+ * POST /api/settings/import — replace the ledger with an export.
+ *
+ * Takes a native DB backup first, then swaps everything inside one transaction
+ * with the original ids preserved, so foreign keys inside the payload stay
+ * valid without any remapping pass.
+ */
+settingsRouter.post("/import", async (req, res, next) => {
   try {
     const db = getDb();
-    const { stay_signed_in, show_on_lock_screen } = req.body as {
-      stay_signed_in?: boolean;
-      show_on_lock_screen?: boolean;
+    const payload = req.body as {
+      format?: string; tables?: Record<string, Record<string, unknown>[]>;
+      settings?: Record<string, string>;
     };
-
-    const updates: string[] = [];
-    const values: unknown[] = [];
-
-    if (stay_signed_in !== undefined) {
-      updates.push("stay_signed_in = ?");
-      values.push(stay_signed_in ? 1 : 0);
+    if (payload?.format !== "choopi-ledger" || !payload.tables) {
+      throw badRequest("Not a Choopi ledger export");
     }
-    if (show_on_lock_screen !== undefined) {
-      updates.push("show_on_lock_screen = ?");
-      values.push(show_on_lock_screen ? 1 : 0);
-    }
-    if (updates.length === 0) return fail(res, "No preferences to update");
-
-    values.push(req.user!.id);
-    db.prepare(`UPDATE users SET ${updates.join(", ")} WHERE id = ?`).run(...values);
-    ok(res, { ok: true });
-  } catch (e) {
-    fail(res, (e as Error).message, 500);
-  }
-});
-
-// POST /api/settings/snapshot — trigger manual portfolio snapshot
-settingsRouter.post("/snapshot", (req, res) => {
-  try {
-    const db = getDb();
-    ok(res, { ok: true, snapshot_at: new Date().toISOString() });
-  } catch (e) {
-    fail(res, (e as Error).message, 500);
-  }
-});
-
-// GET /api/settings/export — full JSON backup of user's ledger (schema_version 2)
-settingsRouter.get("/export", (req, res) => {
-  try {
-    const db = getDb();
-    const payload = buildExport(db, req.user!.id);
-
-    res.setHeader("Content-Type", "application/json");
-    res.setHeader("Content-Disposition", `attachment; filename="choopi-backup-${new Date().toISOString().slice(0,10)}.json"`);
-    res.json(payload);
-  } catch (e) {
-    fail(res, (e as Error).message, 500);
-  }
-});
-
-// POST /api/settings/import — restore a JSON export (schema_version 1 or 2).
-// Takes a native DB backup first, then replaces the user's rows in one
-// transaction with full id remapping. Other users' rows are untouched.
-settingsRouter.post("/import", async (req, res) => {
-  try {
-    const db = getDb();
-    const payload = req.body as ExportPayload;
-
-    const invalid = validateImportPayload(payload);
-    if (invalid) return fail(res, invalid);
 
     const backup = await runBackup(db);
-    const counts = importUserData(db, req.user!.id, payload);
+    const counts: Record<string, number> = {};
+
+    db.transaction(() => {
+      db.pragma("foreign_keys = OFF");
+      // Children first on the way out, parents first on the way in.
+      for (const t of [...LEDGER_TABLES].reverse()) db.prepare(`DELETE FROM ${t}`).run();
+
+      for (const table of LEDGER_TABLES) {
+        const rows = payload.tables![table] ?? [];
+        counts[table] = rows.length;
+        if (!rows.length) continue;
+        const cols = Object.keys(rows[0]);
+        const stmt = db.prepare(
+          `INSERT INTO ${table} (${cols.join(", ")}) VALUES (${cols.map(c => `@${c}`).join(", ")})`
+        );
+        for (const row of rows) stmt.run(row);
+      }
+
+      if (payload.settings) {
+        const write = db.prepare(
+          `INSERT INTO settings (key, value) VALUES (?, ?)
+           ON CONFLICT (key) DO UPDATE SET value = excluded.value`
+        );
+        for (const [k, v] of Object.entries(payload.settings)) {
+          if (SETTINGS[k]) write.run(k, String(v));
+        }
+      }
+      db.pragma("foreign_keys = ON");
+    })();
 
     ok(res, { ok: true, backup: backup.file, imported: counts }, 201);
   } catch (e) {
-    fail(res, (e as Error).message, 500);
+    next(e);
   }
 });
 
-// DELETE /api/settings/data — wipe all investments + transactions (keeps user account)
-settingsRouter.delete("/data", (req, res) => {
+/** POST /api/settings/backup — the manual backup button. */
+settingsRouter.post("/backup", async (_req, res, next) => {
   try {
-    const db = getDb();
-    const uid = req.user!.id;
-    const { confirm } = req.body as { confirm?: string };
-
-    if (confirm !== "RESET") {
-      return fail(res, 'confirm must equal "RESET"');
-    }
-
-    db.transaction(() => {
-      db.prepare("DELETE FROM transactions WHERE user_id = ?").run(uid);
-      db.prepare("DELETE FROM investments WHERE user_id = ?").run(uid);
-      db.prepare("DELETE FROM portfolio_snapshots WHERE user_id = ?").run(uid);
-    })();
-
-    ok(res, { ok: true });
+    const result = await runBackup(getDb());
+    ok(res, { ...result, backups: listBackups().slice(0, 10) }, 201);
   } catch (e) {
-    fail(res, (e as Error).message, 500);
+    next(e);
   }
+});
+
+/** DELETE /api/settings/data — wipe the ledger, keep the login and settings. */
+settingsRouter.delete("/data", (req, res) => {
+  const db = getDb();
+  if ((req.body as { confirm?: string })?.confirm !== "RESET") {
+    throw badRequest('confirm must equal "RESET"');
+  }
+  db.transaction(() => {
+    db.pragma("foreign_keys = OFF");
+    for (const t of [...LEDGER_TABLES].reverse()) db.prepare(`DELETE FROM ${t}`).run();
+    db.pragma("foreign_keys = ON");
+  })();
+  ok(res, { ok: true });
 });

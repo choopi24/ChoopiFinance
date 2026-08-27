@@ -1,531 +1,170 @@
+/**
+ * CSV in and out, one table at a time.
+ *
+ * Spreadsheets are how a manually-entered ledger actually gets bulk-loaded —
+ * typing two years of month-end balances on a phone is not a plan. Import is
+ * additive and upserts on the same natural keys the POST endpoints use, so
+ * re-importing a corrected file fixes rows instead of duplicating them.
+ */
+
 import { Router } from "express";
 import { getDb } from "../db/init.js";
 import { requireAuth } from "../middleware/requireAuth.js";
-import { ok, fail } from "../middleware/respond.js";
-import { recomputeRealized } from "../services/fifo.js";
+import { ok } from "../middleware/respond.js";
+import { badRequest } from "./_validate.js";
 
 export const csvRouter = Router();
 csvRouter.use(requireAuth);
 
-// ── CSV parser helpers ────────────────────────────────────────────────────────
-
-function splitLine(line: string): string[] {
-  const fields: string[] = [];
-  let i = 0;
-  while (i <= line.length) {
-    if (line[i] === '"') {
-      let j = i + 1;
-      while (j < line.length) {
-        if (line[j] === '"' && line[j + 1] === '"') { j += 2; continue; }
-        if (line[j] === '"') break;
-        j++;
-      }
-      fields.push(line.slice(i + 1, j).replace(/""/g, '"').trim());
-      i = j + 2;
-    } else {
-      const j = line.indexOf(",", i);
-      if (j === -1) { fields.push(line.slice(i).trim()); break; }
-      fields.push(line.slice(i, j).trim());
-      i = j + 1;
-    }
-  }
-  return fields;
-}
-
-function parseCsv(text: string): { headers: string[]; rows: Record<string, string>[] } {
-  const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
-  const nonEmpty = lines.filter(l => l.trim());
-  if (nonEmpty.length === 0) return { headers: [], rows: [] };
-
-  const headers = splitLine(nonEmpty[0]).map(h => h.toLowerCase().trim());
-  const rows: Record<string, string>[] = [];
-
-  for (let n = 1; n < nonEmpty.length; n++) {
-    const vals = splitLine(nonEmpty[n]);
-    const row: Record<string, string> = {};
-    headers.forEach((h, i) => { row[h] = vals[i] ?? ""; });
-    rows.push(row);
-  }
-
-  return { headers, rows };
-}
-
-// ── Wide-matrix helpers ───────────────────────────────────────────────────────
-
-/** Parse D.M.YY → YYYY-MM-DD, returns null on failure */
-function parseDMYY(raw: string): string | null {
-  const m = raw.trim().match(/^(\d{1,2})\.(\d{1,2})\.(\d{2})$/);
-  if (!m) return null;
-  const [, d, mo, y] = m;
-  const year = 2000 + parseInt(y, 10);
-  return `${year}-${mo.padStart(2, "0")}-${d.padStart(2, "0")}`;
-}
-
-type CellResult = { kind: "value"; n: number } | { kind: "empty" } | { kind: "invalid"; raw: string };
-
-/** Strip currency symbols/commas and classify the cell value */
-function parseCell(raw: string): CellResult {
-  const s = raw.replace(/^["'\s]+|["'\s]+$/g, "").replace(/[₪,]/g, "").trim();
-  if (!s || s === "-") return { kind: "empty" };
-  const n = parseFloat(s);
-  if (isNaN(n)) return { kind: "invalid", raw };
-  return { kind: "value", n };
-}
-
-const SUGGESTED_NAMES: Record<string, string> = {
-  "הפניקס קופת גמל": "Phoenix Provident Fund",
-  "אלטשולר שחם חיסכון לכל ילד": "Altshuler Savings for Child",
-  "כלל קרן השתלמות": "Klal Education Fund",
-  "מגדל פנסיה": "Migdal Pension",
-  "מנורה מבטחים קרן השתלמות": "Menora Education Fund",
+/** Tables that can be round-tripped, with the query used to export them. */
+const EXPORTS: Record<string, string> = {
+  accounts: "SELECT * FROM accounts ORDER BY id",
+  holdings: `SELECT h.*, a.name AS account_name FROM holdings h
+             JOIN accounts a ON a.id = h.account_id ORDER BY h.id`,
+  transactions: `SELECT t.*, a.name AS account_name, h.symbol AS holding_symbol
+                 FROM transactions t JOIN accounts a ON a.id = t.account_id
+                 LEFT JOIN holdings h ON h.id = t.holding_id ORDER BY t.date, t.id`,
+  prices: `SELECT p.*, h.symbol FROM prices p JOIN holdings h ON h.id = p.holding_id
+           ORDER BY p.date, p.id`,
+  valuations: `SELECT v.*, a.name AS account_name FROM valuations v
+               JOIN accounts a ON a.id = v.account_id ORDER BY v.date, v.id`,
+  fx_rates: "SELECT * FROM fx_rates ORDER BY date, id",
+  rsu_grants: "SELECT * FROM rsu_grants ORDER BY id",
+  rsu_vests: "SELECT * FROM rsu_vests ORDER BY vest_date, id",
+  recurring_rules: "SELECT * FROM recurring_rules ORDER BY id",
 };
 
-function suggestName(raw: string): string {
-  const trimmed = raw.trim();
-  return SUGGESTED_NAMES[trimmed] ?? trimmed;
+/** RFC 4180 quoting: quote when the value contains a comma, quote or newline. */
+function cell(v: unknown): string {
+  if (v == null) return "";
+  const s = String(v);
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-function detectType(name: string): "pension" | "gemel" | "education" | "money_market" | "other" {
-  if (name.includes("פנסיה")) return "pension";
-  if (name.includes("השתלמות")) return "education";
-  if (name.includes("כספית")) return "money_market";
-  if (name.includes("גמל")) return "gemel";
-  return "other";
+function toCsv(rows: Record<string, unknown>[]): string {
+  if (!rows.length) return "";
+  const cols = Object.keys(rows[0]);
+  return [cols.join(","), ...rows.map(r => cols.map(c => cell(r[c])).join(","))].join("\n");
 }
 
-interface FundSnapshot { date: string; value: number }
-
-interface ParsedFund {
-  originalName: string;
-  suggestedName: string;
-  detectedType: ReturnType<typeof detectType>;
-  snapshots: FundSnapshot[];
-}
-
-interface WideMatrixResult {
-  funds: ParsedFund[];
-  errors: { row: number; field: string; message: string }[];
-  skipped_cells: number;
-}
-
-function parseWideMatrix(content: string): WideMatrixResult {
-  const lines = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n").filter(l => l.trim());
-  const errors: { row: number; field: string; message: string }[] = [];
-
-  if (lines.length < 2) {
-    return { funds: [], errors: [{ row: 1, field: "file", message: "CSV must have a header row and at least one data row" }], skipped_cells: 0 };
+/** Split one CSV line, honouring quotes and doubled quotes inside them. */
+function splitLine(line: string): string[] {
+  const out: string[] = [];
+  let field = "";
+  let quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quoted) {
+      if (ch === '"' && line[i + 1] === '"') { field += '"'; i++; }
+      else if (ch === '"') quoted = false;
+      else field += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === ",") { out.push(field); field = ""; }
+    else field += ch;
   }
-
-  const headers = splitLine(lines[0]);
-  if (headers.length < 2) {
-    return { funds: [], errors: [{ row: 1, field: "header", message: "CSV must have at least 2 columns (1 fund + date)" }], skipped_cells: 0 };
-  }
-
-  // All columns except the last are fund columns; last column contains dates
-  const fundCount = headers.length - 1;
-  const fundNames: string[] = [];
-
-  for (let fi = 0; fi < fundCount; fi++) {
-    const name = headers[fi].trim();
-    if (!name) {
-      errors.push({ row: 1, field: `column_${fi + 1}`, message: `Blank fund header at column ${fi + 1}` });
-      fundNames.push(`Fund ${fi + 1}`);
-    } else {
-      fundNames.push(name);
-    }
-  }
-
-  const funds: ParsedFund[] = fundNames.map(name => ({
-    originalName: name,
-    suggestedName: suggestName(name),
-    detectedType: detectType(name),
-    snapshots: [],
-  }));
-
-  let skipped_cells = 0;
-  const datesSeen = new Set<string>();
-
-  for (let li = 1; li < lines.length; li++) {
-    const rowNum = li + 1;
-    const cells = splitLine(lines[li]);
-
-    const rawDate = cells[cells.length - 1]?.trim() ?? "";
-    const isoDate = parseDMYY(rawDate);
-
-    if (!isoDate) {
-      errors.push({ row: rowNum, field: "date", message: `Cannot parse date "${rawDate}" — expected D.M.YY format` });
-      continue;
-    }
-    if (datesSeen.has(isoDate)) {
-      errors.push({ row: rowNum, field: "date", message: `Duplicate date ${isoDate}` });
-      continue;
-    }
-    datesSeen.add(isoDate);
-
-    for (let fi = 0; fi < fundCount; fi++) {
-      const raw = cells[fi] ?? "";
-      const result = parseCell(raw);
-      if (result.kind === "empty") {
-        skipped_cells++;
-      } else if (result.kind === "invalid") {
-        errors.push({ row: rowNum, field: fundNames[fi], message: `Invalid value "${result.raw}"` });
-      } else {
-        funds[fi].snapshots.push({ date: isoDate, value: result.n });
-      }
-    }
-  }
-
-  for (const fund of funds) {
-    fund.snapshots.sort((a, b) => a.date.localeCompare(b.date));
-  }
-
-  return { funds, errors, skipped_cells };
+  out.push(field);
+  return out;
 }
 
-// ── Validators per type ───────────────────────────────────────────────────────
-
-type ValidationError = { row: number; field: string; message: string };
-
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-const VALID_CURRENCIES = new Set(["NIS", "USD"]);
-
-function validateDate(v: string, row: number, field: string): ValidationError | null {
-  if (!ISO_DATE.test(v)) return { row, field, message: `Must be YYYY-MM-DD, got "${v}"` };
-  const d = new Date(v);
-  if (isNaN(d.getTime())) return { row, field, message: `Invalid date "${v}"` };
-  return null;
-}
-
-function validatePositiveNum(v: string, row: number, field: string): ValidationError | null {
-  const n = Number(v);
-  if (isNaN(n) || n <= 0) return { row, field, message: `Must be a positive number, got "${v}"` };
-  return null;
-}
-
-function validateCurrency(v: string, row: number, field: string): ValidationError | null {
-  const upper = v.toUpperCase();
-  if (!VALID_CURRENCIES.has(upper)) {
-    return { row, field, message: `Must be NIS or USD, got "${v}"` };
-  }
-  return null;
-}
-
-function required(v: string, row: number, field: string): ValidationError | null {
-  if (!v || !v.trim()) return { row, field, message: `Required field is empty` };
-  return null;
-}
-
-function validateTradeRow(
-  r: Record<string, string>,
-  n: number,
-  kindField = "kind",
-  sharesField = "units",
-  priceField = "price_per_unit",
-): ValidationError[] {
-  const errs: ValidationError[] = [];
-  const push = (e: ValidationError | null) => { if (e) errs.push(e); };
-
-  push(required(r[kindField], n, kindField));
-  if (r[kindField] && !["BUY", "SELL", "DIV"].includes(r[kindField].toUpperCase())) {
-    errs.push({ row: n, field: kindField, message: `Must be BUY, SELL, or DIV` });
-  }
-  push(validatePositiveNum(r[sharesField] || "0", n, sharesField));
-  push(validatePositiveNum(r[priceField] || "0", n, priceField));
-
-  return errs;
-}
-
-type AssetType = "crypto" | "stock" | "etf" | "pension" | "gemel" | "education" | "money_market" | "other";
-
-const MANUAL_CSV_TYPES = new Set<AssetType>(["pension", "gemel", "education", "money_market", "other"]);
-
-function validateRows(type: AssetType, rows: Record<string, string>[]): {
-  errors: ValidationError[];
-  valid: Record<string, string>[];
-  invalid: number[];
-} {
-  const errors: ValidationError[] = [];
-  const invalid = new Set<number>();
-
-  function addErr(e: ValidationError | null) {
-    if (!e) return;
-    errors.push(e);
-    invalid.add(e.row);
-  }
-
-  rows.forEach((r, i) => {
-    const n = i + 2;
-
-    if (type === "crypto") {
-      addErr(required(r.ticker,         n, "ticker"));
-      addErr(required(r.currency,       n, "currency"));
-      addErr(required(r.date,           n, "date"));
-      if (r.date) addErr(validateDate(r.date, n, "date"));
-      if (r.currency) addErr(validateCurrency(r.currency, n, "currency"));
-      validateTradeRow(r, n, "kind", "units", "price_per_unit").forEach(e => addErr(e));
-    }
-
-    if (type === "stock") {
-      addErr(required(r.ticker,     n, "ticker"));
-      addErr(required(r.currency,   n, "currency"));
-      addErr(required(r.date,       n, "date"));
-      if (r.date) addErr(validateDate(r.date, n, "date"));
-      if (r.currency) addErr(validateCurrency(r.currency, n, "currency"));
-      validateTradeRow(r, n, "kind", "shares", "price_per_share").forEach(e => addErr(e));
-    }
-
-    if (type === "etf") {
-      addErr(required(r.ticker,     n, "ticker"));
-      addErr(required(r.currency,   n, "currency"));
-      addErr(required(r.date,       n, "date"));
-      if (r.date) addErr(validateDate(r.date, n, "date"));
-      if (r.currency) addErr(validateCurrency(r.currency, n, "currency"));
-      validateTradeRow(r, n, "kind", "shares", "price_per_share").forEach(e => addErr(e));
-      if (r.etf_kind && !["accumulating", "distributing"].includes(r.etf_kind.toLowerCase())) {
-        addErr({ row: n, field: "etf_kind", message: "Must be accumulating or distributing" });
-      }
-    }
-
-    if (MANUAL_CSV_TYPES.has(type)) {
-      const amountField = type === "other" ? "invested_amount" : "balance";
-      addErr(required(r.name,        n, "name"));
-      addErr(required(r[amountField], n, amountField));
-      addErr(required(r.currency,    n, "currency"));
-      addErr(required(r.date,        n, "date"));
-      if (r.date) addErr(validateDate(r.date, n, "date"));
-      if (r.currency) addErr(validateCurrency(r.currency, n, "currency"));
-      if (r[amountField]) addErr(validatePositiveNum(r[amountField], n, amountField));
-      if (type === "education" && r.liquid_date && r.liquid_date.trim()) {
-        addErr(validateDate(r.liquid_date, n, "liquid_date"));
-      }
-    }
+function parseCsv(text: string): Record<string, string>[] {
+  const lines = text.replace(/\r\n/g, "\n").split("\n").filter(l => l.trim() !== "");
+  if (lines.length < 2) return [];
+  const cols = splitLine(lines[0]).map(c => c.trim());
+  return lines.slice(1).map(line => {
+    const cells = splitLine(line);
+    return Object.fromEntries(cols.map((c, i) => [c, (cells[i] ?? "").trim()]));
   });
-
-  const validRows = rows.filter((_, i) => !invalid.has(i + 2));
-  return { errors, valid: validRows, invalid: [...invalid] };
 }
 
-// ── POST /api/csv/preview/:type ───────────────────────────────────────────────
+/** GET /api/csv/:table */
+csvRouter.get("/:table", (req, res) => {
+  const table = req.params.table;
+  const sql = EXPORTS[table];
+  if (!sql) throw badRequest(`Cannot export "${table}". Try: ${Object.keys(EXPORTS).join(", ")}`);
 
-csvRouter.post("/preview/:type", (req, res) => {
-  try {
-    const type = req.params.type as AssetType;
-    const VALID_TYPES: AssetType[] = ["crypto", "stock", "etf", "pension", "gemel", "education", "money_market", "other"];
-    if (!VALID_TYPES.includes(type)) return fail(res, `Invalid type: ${type}`);
+  const rows = getDb().prepare(sql).all() as Record<string, unknown>[];
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="choopi-${table}-${new Date().toISOString().slice(0, 10)}.csv"`
+  );
+  res.send(toCsv(rows));
+});
 
-    const { content } = req.body as { content?: string };
-    if (!content || typeof content !== "string") return fail(res, "content (CSV string) is required");
+/** The three series that are worth bulk-loading, each keyed by a lookup name. */
+const IMPORTERS: Record<string, {
+  required: string[];
+  run: (db: ReturnType<typeof getDb>, row: Record<string, string>) => void;
+}> = {
+  prices: {
+    required: ["symbol", "date", "price_minor"],
+    run: (db, row) => {
+      const h = db.prepare("SELECT id, currency FROM holdings WHERE symbol = ? COLLATE NOCASE")
+        .get(row.symbol) as { id: number; currency: string } | undefined;
+      if (!h) throw badRequest(`No holding with symbol "${row.symbol}"`);
+      db.prepare(
+        `INSERT INTO prices (holding_id, date, price_minor, currency) VALUES (?, ?, ?, ?)
+         ON CONFLICT (holding_id, date) DO UPDATE SET price_minor = excluded.price_minor`
+      ).run(h.id, row.date, Math.round(Number(row.price_minor)), row.currency || h.currency);
+    },
+  },
+  valuations: {
+    required: ["account_name", "date", "balance_minor"],
+    run: (db, row) => {
+      const a = db.prepare("SELECT id, currency FROM accounts WHERE name = ? COLLATE NOCASE")
+        .get(row.account_name) as { id: number; currency: string } | undefined;
+      if (!a) throw badRequest(`No account named "${row.account_name}"`);
+      db.prepare(
+        `INSERT INTO valuations (account_id, date, balance_minor, currency) VALUES (?, ?, ?, ?)
+         ON CONFLICT (account_id, date) DO UPDATE SET balance_minor = excluded.balance_minor`
+      ).run(a.id, row.date, Math.round(Number(row.balance_minor)), row.currency || a.currency);
+    },
+  },
+  fx_rates: {
+    required: ["date", "base_currency", "quote_currency", "rate"],
+    run: (db, row) => {
+      db.prepare(
+        `INSERT INTO fx_rates (date, base_currency, quote_currency, rate) VALUES (?, ?, ?, ?)
+         ON CONFLICT (date, base_currency, quote_currency) DO UPDATE SET rate = excluded.rate`
+      ).run(row.date, row.base_currency, row.quote_currency, Number(row.rate));
+    },
+  },
+};
 
-    const { rows } = parseCsv(content);
-    if (rows.length === 0) return fail(res, "CSV has no data rows");
+/**
+ * POST /api/csv/:table — body { csv: "..." }.
+ *
+ * All-or-nothing: one bad row aborts the whole file with the line number, so a
+ * half-imported price series can never silently skew a chart.
+ */
+csvRouter.post("/:table", (req, res) => {
+  const db = getDb();
+  const table = req.params.table;
+  const importer = IMPORTERS[table];
+  if (!importer) {
+    throw badRequest(`Cannot import "${table}". Try: ${Object.keys(IMPORTERS).join(", ")}`);
+  }
 
-    const { errors, valid, invalid } = validateRows(type, rows);
+  const { csv } = req.body as { csv?: string };
+  if (typeof csv !== "string" || !csv.trim()) throw badRequest("csv body field is required");
 
-    ok(res, {
-      rows_total: rows.length,
-      rows_valid: valid.length,
-      rows_invalid: invalid.length,
-      errors,
-      preview_rows: valid.slice(0, 5),
+  const rows = parseCsv(csv);
+  if (!rows.length) throw badRequest("No data rows found — is the header line present?");
+
+  const missing = importer.required.filter(c => !(c in rows[0]));
+  if (missing.length) {
+    throw badRequest(`Missing column(s): ${missing.join(", ")}. Required: ${importer.required.join(", ")}`);
+  }
+
+  db.transaction(() => {
+    rows.forEach((row, i) => {
+      try {
+        importer.run(db, row);
+      } catch (e) {
+        throw badRequest(`Line ${i + 2}: ${(e as Error).message}`);
+      }
     });
-  } catch (e) {
-    fail(res, (e as Error).message, 500);
-  }
-});
+  })();
 
-// ── POST /api/csv/import/:type ────────────────────────────────────────────────
-
-csvRouter.post("/import/:type", (req, res) => {
-  try {
-    const type = req.params.type as AssetType;
-    const { content } = req.body as { content?: string };
-    if (!content) return fail(res, "content is required");
-
-    const db = getDb();
-    const uid = req.user!.id;
-    const { rows } = parseCsv(content);
-    const { errors, valid } = validateRows(type, rows);
-
-    if (errors.length > 0) return fail(res, "CSV has validation errors — re-run preview first");
-    if (valid.length === 0) return fail(res, "No valid rows to import");
-
-    let investments_created = 0;
-    let transactions_created = 0;
-    const affectedInvestmentIds = new Set<number>();
-
-    db.transaction(() => {
-      if (type === "crypto" || type === "stock" || type === "etf") {
-        const byTicker = new Map<string, typeof valid>();
-        for (const r of valid) {
-          const t = r.ticker.toUpperCase();
-          if (!byTicker.has(t)) byTicker.set(t, []);
-          byTicker.get(t)!.push(r);
-        }
-
-        for (const [ticker, trows] of byTicker) {
-          let inv = db
-            .prepare("SELECT id FROM investments WHERE user_id = ? AND ticker = ? AND type = ? AND deleted_at IS NULL")
-            .get(uid, ticker, type) as { id: number } | undefined;
-
-          if (!inv) {
-            const firstRow = trows[0];
-            const name = type === "crypto" ? (firstRow.exchange || ticker) : (firstRow.broker || ticker);
-            const insertInv = db.prepare(
-              `INSERT INTO investments (user_id, type, name, ticker, isin, broker, etf_kind)
-               VALUES (?, ?, ?, ?, ?, ?, ?)`
-            ).run(
-              uid, type,
-              name,
-              ticker,
-              firstRow.isin || null,
-              firstRow.broker || firstRow.exchange || null,
-              (type === "etf" && firstRow.etf_kind) ? firstRow.etf_kind.toLowerCase() : null,
-            );
-            inv = { id: insertInv.lastInsertRowid as number };
-            investments_created++;
-          }
-
-          for (const r of trows) {
-            const kind = (r.kind || "BUY").toUpperCase();
-            const unitsVal = Number(r.units ?? r.shares);
-            const priceVal = Number(r.price_per_unit ?? r.price_per_share);
-            const total = unitsVal * priceVal;
-            const cur = (r.currency || "NIS").toUpperCase();
-            const occurredAt = `${r.date}T12:00:00Z`;
-
-            db.prepare(
-              `INSERT INTO transactions
-                 (investment_id, user_id, kind, units, price_per_unit, total_amount, currency, occurred_at, notes)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-            ).run(inv!.id, uid, kind, unitsVal, priceVal, total, cur, occurredAt, r.notes || null);
-
-            transactions_created++;
-            affectedInvestmentIds.add(inv!.id);
-          }
-        }
-      } else {
-        // Manual types: each row → one investment + one UPDATE transaction
-        const amountField = type === "other" ? "invested_amount" : "balance";
-
-        for (const r of valid) {
-          const insertInv = db.prepare(
-            `INSERT INTO investments (user_id, type, name, liquid_date)
-             VALUES (?, ?, ?, ?)`
-          ).run(
-            uid, type, r.name.trim(),
-            (type === "education" && r.liquid_date) ? r.liquid_date : null
-          );
-          const invId = insertInv.lastInsertRowid as number;
-          investments_created++;
-
-          const amount = Number(r[amountField]);
-          const cur = (r.currency || "NIS").toUpperCase();
-          const occurredAt = `${r.date}T12:00:00Z`;
-
-          db.prepare(
-            `INSERT INTO transactions
-               (investment_id, user_id, kind, total_amount, currency, occurred_at, notes)
-             VALUES (?, ?, 'UPDATE', ?, ?, ?, ?)`
-          ).run(invId, uid, amount, cur, occurredAt, r.notes || null);
-          transactions_created++;
-        }
-      }
-
-      for (const id of affectedInvestmentIds) {
-        recomputeRealized(db, id);
-      }
-    })();
-
-    ok(res, { investments_created, transactions_created }, 201);
-  } catch (e) {
-    fail(res, (e as Error).message, 500);
-  }
-});
-
-// ── POST /api/csv/preview-matrix ─────────────────────────────────────────────
-
-csvRouter.post("/preview-matrix", (req, res) => {
-  try {
-    const { content } = req.body as { content?: string };
-    if (!content || typeof content !== "string") return fail(res, "content (CSV string) is required");
-
-    const { funds, errors, skipped_cells } = parseWideMatrix(content);
-
-    const previews = funds.map(f => {
-      const earliest = f.snapshots[0];
-      const latest   = f.snapshots[f.snapshots.length - 1];
-      const gain     = (earliest && latest) ? latest.value - earliest.value : 0;
-      const gainPct  = (earliest && earliest.value > 0) ? (gain / earliest.value) * 100 : 0;
-      return {
-        originalName:  f.originalName,
-        suggestedName: f.suggestedName,
-        detectedType:  f.detectedType,
-        snapshotCount: f.snapshots.length,
-        earliestDate:  earliest?.date ?? null,
-        latestDate:    latest?.date   ?? null,
-        earliestValue: earliest?.value ?? 0,
-        latestValue:   latest?.value   ?? 0,
-        gain,
-        gainPct,
-      };
-    });
-
-    ok(res, { funds: previews, errors, skipped_cells });
-  } catch (e) {
-    fail(res, (e as Error).message, 500);
-  }
-});
-
-// ── POST /api/csv/import-matrix ───────────────────────────────────────────────
-
-interface FundImportSpec {
-  originalName: string;
-  name: string;
-  type: string;
-}
-
-csvRouter.post("/import-matrix", (req, res) => {
-  try {
-    const { content, funds: fundSpecs } = req.body as { content?: string; funds?: FundImportSpec[] };
-    if (!content || typeof content !== "string") return fail(res, "content is required");
-    if (!Array.isArray(fundSpecs) || fundSpecs.length === 0) return fail(res, "funds array is required");
-
-    const db = getDb();
-    const uid = req.user!.id;
-
-    const { funds, errors } = parseWideMatrix(content);
-    if (errors.length > 0) return fail(res, "CSV has validation errors — re-run preview first");
-
-    const VALID_TYPES = new Set(["pension", "gemel", "education", "money_market", "other"]);
-    let investments_created = 0;
-    let transactions_created = 0;
-
-    db.transaction(() => {
-      for (const parsedFund of funds) {
-        if (parsedFund.snapshots.length === 0) continue;
-
-        const spec = fundSpecs.find(s => s.originalName === parsedFund.originalName);
-        const fundType = spec && VALID_TYPES.has(spec.type) ? spec.type : parsedFund.detectedType;
-        const fundName = ((spec?.name) || parsedFund.suggestedName).trim() || parsedFund.originalName.trim();
-
-        const insertInv = db.prepare(
-          `INSERT INTO investments (user_id, type, name) VALUES (?, ?, ?)`
-        ).run(uid, fundType, fundName);
-        const invId = insertInv.lastInsertRowid as number;
-        investments_created++;
-
-        for (const snap of parsedFund.snapshots) {
-          db.prepare(
-            `INSERT INTO transactions (investment_id, user_id, kind, total_amount, currency, occurred_at)
-             VALUES (?, ?, 'UPDATE', ?, 'NIS', ?)`
-          ).run(invId, uid, snap.value, `${snap.date}T12:00:00Z`);
-          transactions_created++;
-        }
-      }
-    })();
-
-    ok(res, { investments_created, transactions_created }, 201);
-  } catch (e) {
-    fail(res, (e as Error).message, 500);
-  }
+  ok(res, { table, imported: rows.length }, 201);
 });

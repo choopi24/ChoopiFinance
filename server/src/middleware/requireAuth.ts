@@ -31,7 +31,6 @@ const COOKIE_SECURE = process.env.COOKIE_SECURE === "true";
 export interface AuthUser {
   id: number;
   username: string;
-  display_currency: string;
 }
 
 declare global {
@@ -53,7 +52,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
     const payload = jwt.verify(token, JWT_SECRET) as unknown as { sub: number };
     const db = getDb();
     const user = db
-      .prepare("SELECT id, username, display_currency FROM users WHERE id = ?")
+      .prepare("SELECT id, username FROM users WHERE id = ?")
       .get(payload.sub) as AuthUser | undefined;
 
     if (!user) {
