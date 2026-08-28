@@ -4,7 +4,7 @@ import { dirname, join } from "path";
 import { runMigrations } from "./migrate.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DB_PATH = join(__dirname, "../../data/choopi.db");
+export const DB_PATH = join(__dirname, "../../data/choopi.db");
 
 let _db: Database.Database | null = null;
 

@@ -219,9 +219,19 @@ export function netPrincipalOn(
     if (t.type === "deposit" || t.type === "withdrawal") external += t.amount_minor;
   }
 
-  // Buys recorded without a funding deposit came out of pocket.
-  const cash = rawCashOn(ledger, date);
-  const implied = cash < 0 ? -cash : 0;
+  // Buys recorded without a funding deposit came out of pocket, so the
+  // shortfall is principal too.
+  //
+  // Withdrawals are EXCLUDED from this test. Taking money out is not an
+  // unfunded purchase, and counting it as one lets a withdrawal manufacture
+  // principal: deposit 1,000, buy 900, withdraw 500 leaves cash at −400, which
+  // the naive test reads as "400 came out of pocket" and adds back — reporting
+  // 900 of principal against 500 actually contributed, and understating
+  // earnings by the same 400.
+  const fundingCash = ledger.transactions
+    .filter(t => t.date <= date && t.type !== "withdrawal")
+    .reduce((sum, t) => sum + t.amount_minor, 0);
+  const implied = fundingCash < 0 ? -fundingCash : 0;
 
   let rsu = 0;
   if (options.rsuPrincipalBasis === "vest_price") {
@@ -302,6 +312,20 @@ export function firstActivityDate(ledger: Ledger): IsoDate | null {
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 
+/**
+ * Simple return, but only where the question means anything.
+ *
+ * A percentage return needs a positive base. Once you have withdrawn more than
+ * you ever paid in, net principal goes negative and the ratio inverts: a real
+ * gain of 30,500 against −20,000 of principal prints as −152.5%, which reads as
+ * a catastrophic loss and is the exact opposite of the truth. There is no
+ * meaningful percentage to show there, so we show none and let the UI print a
+ * dash next to the money figure, which is still exactly right.
+ */
+function returnPct(earnings: number, principal: number): number | null {
+  return principal > 0 ? safePct(earnings, principal) : null;
+}
+
 export function summarizeAccount(
   fullLedger: Ledger,
   account: AccountRow,
@@ -353,7 +377,7 @@ export function summarizeAccount(
     fees_estimated_display_minor: d(feesEst),
     fx_rate_used: fx.rate,
 
-    simple_return_pct: safePct(netEarnings, principal),
+    simple_return_pct: returnPct(netEarnings, principal),
     money_weighted_return_pct: mwr == null ? null : Math.round(mwr * 1_000_000) / 10_000,
 
     holdings_value_minor: v.holdings_value_minor,
@@ -468,6 +492,11 @@ export interface PortfolioSummary {
   money_weighted_return_pct: number | null;
   unvested_units: number;
   flags: CalcFlag[];
+  /**
+   * Accounts left OUT of the totals because they cannot be valued yet — see
+   * summarizePortfolio. They still appear in `accounts` with their own figures.
+   */
+  excluded_accounts: { account_id: number; name: string; net_principal_minor: number }[];
   accounts: AccountSummary[];
 }
 
@@ -480,7 +509,28 @@ export function summarizePortfolio(
   const accounts = ledger.accounts.map(a =>
     summarizeAccount(ledger, a, date, displayCurrency, options));
 
-  const sum = (f: (a: AccountSummary) => number) => accounts.reduce((s, a) => s + f(a), 0);
+  /**
+   * An account with deposits but no price or balance yet cannot be decomposed:
+   * its value is unknown, not zero. Counting its principal while treating its
+   * value as zero would report the whole deposit as a LOSS — so a brand new
+   * account, correctly funded, would knock the portfolio's earnings down by
+   * exactly what you just paid in.
+   *
+   * It is excluded from the totals instead, and named in `excluded_accounts` so
+   * the UI can say what is missing rather than quietly misstating the total.
+   * This is the same rule the charts use (see routes/_context.decomposeSeries),
+   * which is what keeps the headline and the chart telling the same story.
+   */
+  const valued = accounts.filter(a => !a.flags.includes("no_data"));
+  const excluded = accounts
+    .filter(a => a.flags.includes("no_data"))
+    .map(a => ({
+      account_id: a.account_id,
+      name: a.name,
+      net_principal_minor: a.net_principal_display_minor,
+    }));
+
+  const sum = (f: (a: AccountSummary) => number) => valued.reduce((s, a) => s + f(a), 0);
   const value = sum(a => a.value_display_minor);
   const principal = sum(a => a.net_principal_display_minor);
   const fees = sum(a => a.fees_paid_display_minor);
@@ -489,7 +539,9 @@ export function summarizePortfolio(
   // Portfolio MWR: every account's flows converted to display currency at the
   // rate in force on the flow's own date, then solved once.
   const flows: { date: IsoDate; amount: number }[] = [];
+  const valuedIds = new Set(valued.map(a => a.account_id));
   for (const a of ledger.accounts) {
+    if (!valuedIds.has(a.id)) continue; // excluded above; its flows would skew the rate
     const sub = forAccount(ledger, a.id);
     for (const f of principalCashflows(sub, date, options)) {
       const fx = resolveFx(ledger.fx, a.currency, displayCurrency, f.date, options.staleFxDays);
@@ -507,10 +559,11 @@ export function summarizePortfolio(
     gross_earnings_minor: netEarnings + fees,
     fees_paid_minor: fees,
     fees_estimated_minor: sum(a => a.fees_estimated_display_minor),
-    simple_return_pct: safePct(netEarnings, principal),
+    simple_return_pct: returnPct(netEarnings, principal),
     money_weighted_return_pct: mwr == null ? null : Math.round(mwr * 1_000_000) / 10_000,
     unvested_units: sum(a => a.unvested_units),
     flags: [...new Set(accounts.flatMap(a => a.flags))],
+    excluded_accounts: excluded,
     accounts,
   };
 }

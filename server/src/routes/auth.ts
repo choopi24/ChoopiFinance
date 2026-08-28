@@ -1,107 +1,140 @@
 /**
- * Login. Deliberately thin: one user, one cookie.
+ * The passcode gate.
  *
- * `GET /status` exists so the client can tell "nobody has registered yet" from
- * "you are signed out" and show the right screen without a failed request.
+ * Three endpoints and nothing else: what state am I in, let me in, let me out.
+ * `GET /status` exists so the client can tell "no passcode has been set yet"
+ * from "you are signed out" and show the right screen without a failed request.
  */
 
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
-import bcrypt from "bcrypt";
-import { getDb } from "../db/init.js";
 import { ok } from "../middleware/respond.js";
 import {
-  signToken, setAuthCookie, clearAuthCookie, requireAuth,
+  signSession, setAuthCookie, clearAuthCookie, hasValidSession, requireAuth,
 } from "../middleware/requireAuth.js";
+import { normalizeIp } from "../net/lanGuard.js";
+import {
+  clearFailures, isPinConfigured, lockState, pinIsFromEnv, recordFailure,
+  savePin, verifyPin,
+} from "../security/pin.js";
 import { HttpError, badRequest } from "./_validate.js";
 
 export const authRouter = Router();
 
-const BCRYPT_ROUNDS = 12;
-
-// Throttle credential endpoints: 10 attempts / 15 min / IP.
-const authLimiter = rateLimit({
+/**
+ * A coarse cap on top of the per-device lockout. Generous enough that fat
+ * fingers on a phone keypad never trip it, tight enough that a script cannot
+ * walk a 6-digit space.
+ */
+const unlockLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: 10,
+  limit: 30,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: "Too many attempts, please try again later" },
+  message: { success: false, error: "Too many attempts — wait a few minutes and try again" },
 });
 
-const userCount = (): number =>
-  (getDb().prepare("SELECT COUNT(*) n FROM users").get() as { n: number }).n;
+/** Lockouts are keyed per device, so one phone's typos don't lock out the Mac. */
+const deviceKey = (req: { socket: { remoteAddress?: string } }) =>
+  normalizeIp(req.socket.remoteAddress) || "unknown";
 
-/** GET /api/auth/status — no auth required. */
+/** GET /api/auth/status — the only endpoint the client may call signed out. */
 authRouter.get("/status", (req, res) => {
-  ok(res, { setup_required: userCount() === 0, authenticated: Boolean(req.cookies?.cf_token) });
+  const lock = lockState(deviceKey(req));
+  ok(res, {
+    setup_required: !isPinConfigured(),
+    authenticated: hasValidSession(req),
+    managed_by_env: pinIsFromEnv(),
+    locked: lock.locked,
+    retry_in_seconds: lock.retryInSeconds,
+  });
 });
 
 /**
- * POST /api/auth/register — allowed only while no user exists.
+ * POST /api/auth/setup — set the passcode, allowed only when none exists.
  *
- * This app is reachable by everything on the LAN, so leaving registration open
- * would mean any device on the network could create itself an account.
+ * Everything on the LAN can reach this server, so this endpoint closes forever
+ * the moment a passcode is set. Changing it afterwards requires the current one.
  */
-authRouter.post("/register", authLimiter, async (req, res, next) => {
+authRouter.post("/setup", unlockLimiter, async (req, res, next) => {
   try {
-    const { username, password } = req.body as { username?: string; password?: string };
-    if (userCount() > 0) {
-      throw new HttpError("This tracker already has an account — sign in instead", 409);
+    if (isPinConfigured()) {
+      throw new HttpError("A passcode is already set — unlock with it instead", 409);
     }
-    if (!username || typeof username !== "string" || username.trim().length < 2) {
-      throw badRequest("Username must be at least 2 characters");
-    }
-    if (!password || typeof password !== "string" || password.length < 8) {
-      throw badRequest("Password must be at least 8 characters");
+    const { pin } = req.body as { pin?: string };
+    try {
+      await savePin(pin as string);
+    } catch (e) {
+      throw badRequest((e as Error).message);
     }
 
-    const db = getDb();
-    const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
-    const r = db.prepare("INSERT INTO users (username, password_hash) VALUES (?, ?)")
-      .run(username.trim(), hash);
-
-    const id = r.lastInsertRowid as number;
-    setAuthCookie(res, signToken(id, true), true);
-    ok(res, { user: { id, username: username.trim() } }, 201);
+    setAuthCookie(res, signSession());
+    clearFailures(deviceKey(req));
+    ok(res, { ok: true }, 201);
   } catch (e) {
     next(e);
   }
 });
 
-/** POST /api/auth/login */
-authRouter.post("/login", authLimiter, async (req, res, next) => {
+/** POST /api/auth/unlock */
+authRouter.post("/unlock", unlockLimiter, async (req, res, next) => {
   try {
-    const { username, password, stay_signed_in = true } = req.body as {
-      username?: string; password?: string; stay_signed_in?: boolean;
-    };
-    if (!username || !password) throw badRequest("Username and password required");
+    const key = deviceKey(req);
+    const lock = lockState(key);
+    if (lock.locked) {
+      throw new HttpError(
+        `Too many wrong passcodes. Try again in ${Math.ceil(lock.retryInSeconds / 60)} minute(s).`,
+        429
+      );
+    }
+    if (!isPinConfigured()) throw badRequest("No passcode has been set yet");
 
-    const db = getDb();
-    const row = db.prepare("SELECT id, username, password_hash FROM users WHERE username = ?")
-      .get(String(username).trim()) as
-      { id: number; username: string; password_hash: string } | undefined;
-
-    // Same message either way — a different one for an unknown username would
-    // tell anyone on the LAN which names exist.
-    if (!row || !(await bcrypt.compare(password, row.password_hash))) {
-      throw new HttpError("Invalid credentials", 401);
+    const { pin } = req.body as { pin?: string };
+    if (await verifyPin(String(pin ?? ""))) {
+      clearFailures(key);
+      setAuthCookie(res, signSession());
+      ok(res, { ok: true });
+      return;
     }
 
-    db.prepare("UPDATE users SET last_login_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?")
-      .run(row.id);
-
-    setAuthCookie(res, signToken(row.id, stay_signed_in), stay_signed_in);
-    ok(res, { user: { id: row.id, username: row.username } });
+    const next_state = recordFailure(key);
+    throw new HttpError(
+      next_state.locked
+        ? `Too many wrong passcodes. Locked for ${Math.ceil(next_state.retryInSeconds / 60)} minutes.`
+        : `Wrong passcode. ${next_state.remaining} attempt(s) left before a lockout.`,
+      401
+    );
   } catch (e) {
     next(e);
   }
 });
 
-authRouter.post("/logout", (_req, res) => {
+/** POST /api/auth/change — current passcode required, even while signed in. */
+authRouter.post("/change", requireAuth, async (req, res, next) => {
+  try {
+    const { current_pin, new_pin } = req.body as { current_pin?: string; new_pin?: string };
+    if (pinIsFromEnv()) {
+      throw badRequest(
+        "The passcode is set by APP_PIN_HASH in server/.env. Change it there with `npm run set-pin`."
+      );
+    }
+    if (!(await verifyPin(String(current_pin ?? "")))) {
+      throw new HttpError("Current passcode is incorrect", 403);
+    }
+    try {
+      await savePin(new_pin as string);
+    } catch (e) {
+      throw badRequest((e as Error).message);
+    }
+    // Re-issue: the new passcode should mean a fresh session, not a stale one.
+    setAuthCookie(res, signSession());
+    ok(res, { ok: true });
+  } catch (e) {
+    next(e);
+  }
+});
+
+authRouter.post("/lock", (_req, res) => {
   clearAuthCookie(res);
   ok(res, { ok: true });
-});
-
-authRouter.get("/me", requireAuth, (req, res) => {
-  ok(res, { user: req.user });
 });

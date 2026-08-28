@@ -17,7 +17,7 @@ import {
 } from "../calc/index.js";
 import {
   CURRENCIES, FREQUENCIES, VEST_STATUSES,
-  absent, badRequest, date, enumOf, intParam, minorInt, notFound, num,
+  absent, badRequest, date, enumOf, intParam, notFound, num,
   optMinorInt, optStr, qDate,
 } from "./_validate.js";
 
@@ -76,6 +76,11 @@ rsuRouter.get("/", (req, res) => {
   });
 
   ok(res, { as_of: asOf, grants: enriched });
+});
+
+/** GET /api/rsu/schedule — every tranche across every grant, in vest order. */
+rsuRouter.get("/schedule", (_req, res) => {
+  ok(res, { schedule: rsu.schedule(getDb()) });
 });
 
 /** GET /api/rsu/vests?grant_id= — the editable tranche table. */

@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd agent for Choopi Finance.
+
+  Install:
+    1. Edit the two paths marked EDIT ME below.
+    2. cp deploy/com.choopi.finance.plist ~/Library/LaunchAgents/
+    3. launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.choopi.finance.plist
+
+  A *user agent* (~/Library/LaunchAgents), not a system daemon: it runs as you,
+  so it can read your home directory and the mkcert keychain, and it needs no
+  root. The trade-off is that it starts when you log in rather than at boot — on
+  an always-on Mac that is usually the same thing. If the machine must serve
+  while logged out, enable automatic login, or move this to
+  /Library/LaunchDaemons and set UserName.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.choopi.finance</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <!-- EDIT ME: absolute path to node (find it with: which node) -->
+    <string>/opt/homebrew/bin/node</string>
+    <!-- EDIT ME: absolute path to the built server -->
+    <string>/Users/YOU/path/to/choopi-finance/server/dist/index.js</string>
+  </array>
+
+  <!-- EDIT ME: the repository root. Relative paths inside the app resolve from
+       the compiled file's own location, so this mainly affects logs. -->
+  <key>WorkingDirectory</key>
+  <string>/Users/YOU/path/to/choopi-finance</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- launchd gives a process almost no PATH; better-sqlite3's native module
+         and node itself are happier with an explicit one. -->
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>NODE_ENV</key>
+    <string>production</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Restart if it ever exits, with a floor so a crash loop doesn't spin. -->
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/YOU/path/to/choopi-finance/server/data/choopi.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOU/path/to/choopi-finance/server/data/choopi.log</string>
+
+  <!-- Low priority: this is a personal app, not something that should compete
+       with whatever you are actually doing on the machine. -->
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

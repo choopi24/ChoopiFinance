@@ -140,6 +140,70 @@ describe("net principal vs earnings", () => {
     expectIdentity(s);
   });
 
+  it("a withdrawal never manufactures principal via the implied-deposit rule", () => {
+    // Regression: the implied-deposit rule reads a negative cash balance as
+    // "buys came out of pocket". A withdrawal also drives cash negative, and
+    // counting THAT as an implied deposit inflated principal by the amount
+    // withdrawn — reporting money as still invested after it had been taken out.
+    const a = acct({ valuation_mode: "market", currency: "USD" });
+    const l = ledger({
+      accounts: [a],
+      holdings: [{ id: 10, account_id: 1, symbol: "VOO", display_name: null, asset_class: "etf", currency: "USD" }],
+      transactions: [
+        tx({ type: "deposit", date: "2026-01-10", amount_minor: M(1_000), currency: "USD" }),
+        tx({ type: "buy", holding_id: 10, date: "2026-01-15", quantity: 2,
+             price_minor: M(450), amount_minor: -M(900), currency: "USD" }),
+        tx({ type: "withdrawal", date: "2026-01-20", amount_minor: -M(500), currency: "USD" }),
+      ],
+      prices: [{ holding_id: 10, date: "2026-01-31", price_minor: M(500), currency: "USD" }],
+    });
+
+    // 1,000 in, 500 back out. The buy was funded by the deposit.
+    expect(netPrincipalOn(l, "2026-02-01")).toBe(M(500));
+
+    const s = summarizeAccount(l, a, "2026-02-01", "USD");
+    expect(s.value_minor).toBe(M(1_000));      // 2 × 500 of shares, no cash left
+    expect(s.net_earnings_minor).toBe(M(500)); // 1,000 held − 500 net contributed
+    expectIdentity(s);
+  });
+
+  it("reports no return percentage once more has been withdrawn than paid in", () => {
+    // Regression: with principal negative, earnings/principal inverts, and a
+    // real gain printed as a large negative percentage.
+    const a = acct();
+    const l = ledger({
+      accounts: [a],
+      transactions: [
+        tx({ type: "deposit",    date: "2026-01-10", amount_minor:  M(10_000) }),
+        tx({ type: "withdrawal", date: "2026-02-10", amount_minor: -M(30_000) }),
+      ],
+      valuations: [{ account_id: 1, date: "2026-01-31", balance_minor: M(10_500), currency: "ILS" }],
+    });
+
+    const s = summarizeAccount(l, a, "2026-06-30", "ILS");
+    expect(s.net_principal_minor).toBe(-M(20_000));
+    // 30,000 taken out + 10,500 still held − 10,000 ever paid in.
+    expect(s.net_earnings_minor).toBe(M(30_500));
+    expect(s.simple_return_pct).toBeNull();
+    expectIdentity(s);
+  });
+
+  it("still counts an unfunded buy as principal", () => {
+    // The rule the fix above must not break: shares bought with no recorded
+    // deposit really did come out of pocket.
+    const a = acct({ valuation_mode: "market", currency: "USD" });
+    const l = ledger({
+      accounts: [a],
+      holdings: [{ id: 10, account_id: 1, symbol: "VOO", display_name: null, asset_class: "etf", currency: "USD" }],
+      transactions: [
+        tx({ type: "buy", holding_id: 10, date: "2026-01-15", quantity: 2,
+             price_minor: M(450), amount_minor: -M(900), currency: "USD" }),
+      ],
+      prices: [{ holding_id: 10, date: "2026-01-31", price_minor: M(500), currency: "USD" }],
+    });
+    expect(netPrincipalOn(l, "2026-02-01")).toBe(M(900));
+  });
+
   it("a buy does NOT add principal when a deposit already funded it", () => {
     const a = acct({ valuation_mode: "market", currency: "USD" });
     const l = ledger({
@@ -392,6 +456,78 @@ describe("time series", () => {
     for (const p of pts) {
       expect(p.principal_minor + p.earnings_minor).toBe(p.value_minor);
     }
+  });
+});
+
+// ── PORTFOLIO ROLL-UP ────────────────────────────────────────────────────────
+
+describe("summarizePortfolio excludes accounts it cannot value", () => {
+  /** A funded account with no price or balance yet — value unknown, not zero. */
+  function unvaluedAccount() {
+    return {
+      account: acct({ id: 2, name: "Brand new" }),
+      transactions: [
+        tx({ id: 99, account_id: 2, type: "deposit", date: "2026-02-01", amount_minor: M(50_000) }),
+      ],
+    };
+  }
+
+  it("does not report a freshly funded account as a 100% loss", () => {
+    const funded = acct({ id: 1, name: "Pension" });
+    const { account: fresh, transactions: freshTx } = unvaluedAccount();
+
+    const l = ledger({
+      accounts: [funded, fresh],
+      transactions: [
+        tx({ account_id: 1, type: "deposit", date: "2026-01-01", amount_minor: M(100_000) }),
+        ...freshTx,
+      ],
+      valuations: [{ account_id: 1, date: "2026-06-30", balance_minor: M(110_000), currency: "ILS" }],
+    });
+
+    const p = summarizePortfolio(l, "2026-06-30", "ILS");
+
+    // Only the account that can actually be valued contributes.
+    expect(p.value_minor).toBe(M(110_000));
+    expect(p.net_principal_minor).toBe(M(100_000));
+    expect(p.net_earnings_minor).toBe(M(10_000));
+
+    // …and the one left out is named, not silently dropped.
+    expect(p.excluded_accounts).toHaveLength(1);
+    expect(p.excluded_accounts[0].name).toBe("Brand new");
+    expect(p.excluded_accounts[0].net_principal_minor).toBe(M(50_000));
+  });
+
+  it("the excluded account still reports its own figures", () => {
+    const { account: fresh, transactions: freshTx } = unvaluedAccount();
+    const l = ledger({ accounts: [fresh], transactions: freshTx });
+
+    const p = summarizePortfolio(l, "2026-06-30", "ILS");
+    const own = p.accounts.find(a => a.account_id === 2)!;
+
+    // The account screen must still say "you put in 50,000 and I can't value it".
+    expect(own.net_principal_minor).toBe(M(50_000));
+    expect(own.flags).toContain("no_data");
+
+    // But the portfolio headline stays empty rather than showing −50,000.
+    expect(p.value_minor).toBe(0);
+    expect(p.net_principal_minor).toBe(0);
+    expect(p.net_earnings_minor).toBe(0);
+  });
+
+  it("includes the account as soon as it has a balance", () => {
+    const { account: fresh, transactions: freshTx } = unvaluedAccount();
+    const l = ledger({
+      accounts: [fresh],
+      transactions: freshTx,
+      valuations: [{ account_id: 2, date: "2026-03-31", balance_minor: M(51_000), currency: "ILS" }],
+    });
+
+    const p = summarizePortfolio(l, "2026-06-30", "ILS");
+    expect(p.excluded_accounts).toHaveLength(0);
+    expect(p.value_minor).toBe(M(51_000));
+    expect(p.net_principal_minor).toBe(M(50_000));
+    expect(p.net_earnings_minor).toBe(M(1_000));
   });
 });
 

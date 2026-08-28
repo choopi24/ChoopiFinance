@@ -2,3 +2,13 @@
 *.db-shm
 *.db-wal
 !.gitkeep
+
+# Anything that is a database by any other name. The rule above was *.db only,
+# which let server/data/choopi.db.bak-20260703 — a real ledger, with users and
+# password hashes — be committed to a public repo. Match the *stem*, not the
+# extension, so a renamed or suffixed copy can never slip through again.
+choopi.db*
+*.bak*
+*.sqlite
+*.sqlite3
+*.dump

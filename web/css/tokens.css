@@ -1,0 +1,183 @@
+/* ===== Choopi Finance — Design Tokens ===== */
+
+:root {
+  /* Typography */
+  --font-sans: "Hanken Grotesk Variable", "Hanken Grotesk", system-ui, -apple-system, sans-serif;
+  --font-mono: "Spline Sans Mono Variable", "Spline Sans Mono", ui-monospace, monospace;
+
+  /* Type scale */
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 14px;
+  --text-md: 15px;
+  --text-lg: 18px;
+  --text-xl: 22px;
+  --text-2xl: 28px;
+  --text-3xl: 36px;
+  --text-display: 64px;
+
+  /* Spacing scale (4px base) */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+  --sp-16: 64px;
+
+  /* Radii */
+  --r-xs: 6px;
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 20px;
+  --r-pill: 999px;
+
+  /* Accent — single electric blue, shared across themes (no gradient).
+     --accent-soft / --accent-ink derive per-theme via color-mix. */
+  --accent: #2F6BED;
+}
+
+/* Light theme — cool slate */
+[data-theme="light"] {
+  --bg:        #F5F7FA;
+  --bg-alt:    #EEF1F6;
+  --surface:   #FFFFFF;
+  --surface-2: #F2F5F9;
+  --border:    #E3E8EF;
+  --border-strong: #CFD7E2;
+  --text:      #0F172A;
+  --text-soft: #5A6576;
+  --text-faint:#93A0B2;
+
+  /* Accent derivations */
+  --accent-ink:  var(--accent);
+  --accent-soft: color-mix(in oklab, var(--accent) 10%, var(--surface));
+
+  /* Semantic + generated soft tints (re-tint per theme) */
+  --emerald: #0E9E6E;
+  --rose:    #E0484D;
+  --amber:   #C9820A;
+  --emerald-soft: color-mix(in oklab, var(--emerald) 12%, var(--surface));
+  --rose-soft:    color-mix(in oklab, var(--rose) 11%, var(--surface));
+  --amber-soft:   color-mix(in oklab, var(--amber) 12%, var(--surface));
+
+  /* Chart palette (asset types) */
+  --c-crypto: #6E59E0;
+  --c-stocks: #1F92CC;
+  --c-etf:    #109A86;
+  --c-rsu:    #3F6ED6;
+  --c-pension:#CE8409;
+  --c-gemel:  #B0592E;
+  --c-edu:    #D65B9A;
+  --c-mm:     #5B7FBF;
+  --c-other:  #7E8A9C;
+
+  --shadow-sm: 0 1px 2px rgba(15,23,42,0.05);
+  --shadow-md: 0 4px 16px rgba(15,23,42,0.07);
+  --shadow-lg: 0 12px 40px rgba(15,23,42,0.10);
+  --skeleton:  linear-gradient(90deg, #E9EDF3 0%, #F4F7FB 50%, #E9EDF3 100%);
+}
+
+/* Dark theme — deep navy */
+[data-theme="dark"] {
+  --bg:        #0B1120;
+  --bg-alt:    #070C18;
+  --surface:   #121A2B;
+  --surface-2: #1A2336;
+  --border:    #262F46;
+  --border-strong: #374159;
+  --text:      #EAEEF6;
+  --text-soft: #9AA7BD;
+  --text-faint:#6B7689;
+
+  /* Accent derivations */
+  --accent-ink:  color-mix(in oklab, var(--accent) 72%, white);
+  --accent-soft: color-mix(in oklab, var(--accent) 22%, var(--surface));
+
+  /* Semantic + generated soft tints (re-tint per theme) */
+  --emerald: #2DD495;
+  --rose:    #FF6B6B;
+  --amber:   #F5B13C;
+  --emerald-soft: color-mix(in oklab, var(--emerald) 16%, var(--surface));
+  --rose-soft:    color-mix(in oklab, var(--rose) 16%, var(--surface));
+  --amber-soft:   color-mix(in oklab, var(--amber) 16%, var(--surface));
+
+  /* Chart palette (asset types) */
+  --c-crypto: #8E7BF7;
+  --c-stocks: #3FC0E0;
+  --c-etf:    #2DD4A7;
+  --c-rsu:    #6C93F0;
+  --c-pension:#F5B13C;
+  --c-gemel:  #E8935F;
+  --c-edu:    #F178B6;
+  --c-mm:     #7FA3E8;
+  --c-other:  #93A0B6;
+
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.4);
+  --shadow-md: 0 4px 16px rgba(0,0,0,0.35);
+  --shadow-lg: 0 12px 40px rgba(0,0,0,0.5);
+  --skeleton:  linear-gradient(90deg, #141D30 0%, #1E2840 50%, #141D30 100%);
+}
+
+/* Skeleton shimmer */
+@keyframes shimmer { from { background-position: -200% 0; } to { background-position: 200% 0; } }
+
+/* Refresh spin */
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.skel {
+  background: var(--skeleton);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s infinite linear;
+  border-radius: var(--r-sm);
+}
+
+/* Modal slide-up */
+@keyframes slideUp {
+  from { transform: translateY(16px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+/* Focus ring */
+*:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ── Local webfonts ──────────────────────────────────────────────────────────
+   Copied out of node_modules by scripts/sync-assets.mjs. Nothing is fetched
+   from a CDN — the app is fully functional with the network unplugged.
+
+   Neither family ships a Hebrew subset, so the Hebrew halves of the bilingual
+   labels fall through to the platform's own Hebrew face. That is why every
+   font stack below names one explicitly before the generic. */
+@font-face {
+  font-family: "Hanken Grotesk Variable";
+  src: url("/fonts/hanken-grotesk-latin.woff2") format("woff2-variations");
+  font-weight: 100 900;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+2000-206F, U+2122, U+2212;
+}
+@font-face {
+  font-family: "Spline Sans Mono Variable";
+  src: url("/fonts/spline-sans-mono-latin.woff2") format("woff2-variations");
+  font-weight: 100 900;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+2000-206F, U+2122, U+2212;
+}
+
+:root {
+  --font-sans: "Hanken Grotesk Variable", "Assistant", "Noto Sans Hebrew",
+               "Arial Hebrew", system-ui, -apple-system, sans-serif;
+  --font-mono: "Spline Sans Mono Variable", "Noto Sans Hebrew", ui-monospace,
+               SFMono-Regular, Menlo, monospace;
+
+  /* Chrome heights, referenced by both the layout and the scroll padding. */
+  --topbar-h: 52px;
+  --tabbar-h: 60px;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+}

@@ -12,11 +12,13 @@ import { requireAuth } from "../middleware/requireAuth.js";
 import { ok } from "../middleware/respond.js";
 import {
   accountValueOn, addMonths, daysBetween, feesPaidByKindOn, forAccount, loadLedger,
-  portfolioSeries, priceOn, resolveFx, scaleMinor, staleAccounts, summarizePortfolio,
-  unitsHeldOn,
+  priceOn, resolveFx, scaleMinor, staleAccounts, summarizePortfolio, unitsHeldOn,
   type Currency, type FxRow,
 } from "../calc/index.js";
-import { calcOptions, RANGES, rangeDates, requestCurrency, type Range } from "./_context.js";
+import {
+  calcOptions, decomposeSeries, projectAccount, projectionQuery, RANGES,
+  requestCurrency, seriesDates, type Range,
+} from "./_context.js";
 import { qDate, qEnum, qInt } from "./_validate.js";
 
 export const portfolioRouter = Router();
@@ -44,7 +46,7 @@ portfolioRouter.get("/series", (req, res) => {
   const currency = requestCurrency(req, db);
   const options = calcOptions(db);
   const ledger = loadLedger(db);
-  const dates = rangeDates(ledger, range, asOf);
+  const dates = seriesDates(req, ledger, asOf);
 
   const perAccount = ledger.accounts.map(a => {
     const scoped = forAccount(ledger, a.id);
@@ -63,7 +65,7 @@ portfolioRouter.get("/series", (req, res) => {
   ok(res, {
     range,
     display_currency: currency,
-    points: portfolioSeries(ledger, dates, currency, options),
+    points: decomposeSeries(ledger, ledger.accounts, dates, currency, options),
     per_account: perAccount,
   });
 });
@@ -164,6 +166,82 @@ portfolioRouter.get("/fees-monthly", (req, res) => {
     months: rows,
     window_total_minor: rows.reduce((s, r) => s + r.total_minor, 0),
     by_kind_to_date: feesPaidByKindOn(ledger, asOf),
+  });
+});
+
+/**
+ * GET /api/portfolio/projection?years=&annual_return_pct=&currency=
+ *
+ * The compound-interest calculator, run across the whole portfolio: every
+ * account starts from its value today, contributes what its recurring rules
+ * pay in, and is dragged by its own configured fee percentages. One assumed
+ * return applies to everything — a projection is a scenario, not a forecast,
+ * and per-asset return guesses would only decorate the guess with precision.
+ *
+ * Cross-currency accounts convert at TODAY's rate throughout: projecting FX
+ * would be inventing a second forecast inside the first.
+ */
+portfolioRouter.get("/projection", (req, res) => {
+  const db = getDb();
+  const asOf = qDate(req, "as_of");
+  const q = projectionQuery(req);
+  const currency = requestCurrency(req, db);
+  const options = calcOptions(db);
+  const ledger = loadLedger(db);
+
+  const perAccount: {
+    account_id: number; name: string; currency: Currency; fx_rate_used: number;
+    monthly_contribution_minor: number; final_value_display_minor: number;
+  }[] = [];
+  const skipped: { account_id: number; name: string }[] = [];
+  const totals = new Map<number, { value: number; principal: number; fees: number; contributed: number }>();
+
+  for (const account of ledger.accounts) {
+    const projected = projectAccount(db, ledger, account, q, options, asOf);
+    if (!projected) { skipped.push({ account_id: account.id, name: account.name }); continue; }
+
+    const fx = resolveFx(ledger.fx, account.currency, currency, asOf, options.staleFxDays);
+    for (const pt of projected.result.points) {
+      const t = totals.get(pt.month) ?? { value: 0, principal: 0, fees: 0, contributed: 0 };
+      t.value += scaleMinor(pt.value_minor, fx.rate);
+      t.principal += scaleMinor(pt.principal_minor, fx.rate);
+      t.fees += scaleMinor(pt.fees_minor, fx.rate);
+      t.contributed += scaleMinor(pt.contributed_minor, fx.rate);
+      totals.set(pt.month, t);
+    }
+    perAccount.push({
+      account_id: account.id,
+      name: account.name,
+      currency: account.currency,
+      fx_rate_used: fx.rate,
+      monthly_contribution_minor: projected.input.monthly_contribution_minor,
+      final_value_display_minor: scaleMinor(projected.result.final.value_minor, fx.rate),
+    });
+  }
+
+  const points = [...totals.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([month, t]) => ({
+      month,
+      value_minor: t.value,
+      principal_minor: t.principal,
+      earnings_minor: t.value - t.principal,
+      fees_minor: t.fees,
+      contributed_minor: t.contributed,
+    }));
+
+  ok(res, {
+    as_of: asOf,
+    display_currency: currency,
+    assumptions: {
+      annual_return_pct: q.annualReturnPct,
+      years: q.years,
+      note: "A projection from your assumptions, not a forecast. FX held at today's rate.",
+    },
+    points,
+    final: points[points.length - 1] ?? null,
+    accounts: perAccount,
+    skipped_no_data: skipped,
   });
 });
 

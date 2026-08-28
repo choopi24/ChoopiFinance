@@ -3,17 +3,27 @@
   "version": "0.0.1",
   "private": true,
   "workspaces": [
-    "client",
     "server",
     "shared"
   ],
   "scripts": {
-    "dev": "concurrently -k -n client,server -c cyan,yellow \"npm run dev -w client\" \"npm run dev -w server\"",
-    "build": "npm run build -w client && npm run build -w server",
-    "start": "npm run build && node server/dist/index.js",
-    "install:all": "npm install"
+    "dev": "npm run dev -w server",
+    "start": "npm run build -w server && node server/dist/index.js",
+    "build": "npm run build -w server",
+    "assets": "node scripts/sync-assets.mjs",
+    "icons": "node scripts/make-icons.mjs",
+    "setup:https": "node scripts/setup-https.mjs",
+    "set-pin": "npm run set-pin -w server",
+    "restore": "npm run restore -w server",
+    "backup": "npm run backup -w server",
+    "postinstall": "node scripts/sync-assets.mjs && node scripts/make-icons.mjs",
+    "test": "npm run test -w server",
+    "seed:demo": "npm run seed:demo -w server"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"
+  },
+  "dependencies": {
+    "chart.js": "4.5.1"
   }
 }

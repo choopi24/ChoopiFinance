@@ -10,7 +10,7 @@ import { Router } from "express";
 import { getDb } from "../db/init.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { ok } from "../middleware/respond.js";
-import { resolveFx, today, type Currency, type FxRow } from "../calc/index.js";
+import { resolveFx, type Currency, type FxRow } from "../calc/index.js";
 import { calcOptions } from "./_context.js";
 import {
   CURRENCIES, absent, badRequest, date, enumOf, intParam, notFound, num, qDate, qInt,

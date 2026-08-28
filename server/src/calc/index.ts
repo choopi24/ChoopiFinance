@@ -19,3 +19,4 @@ export * from "./engine.js";
 export * from "./repo.js";
 export * as rsu from "./rsu.js";
 export * as recurring from "./recurring.js";
+export * as projection from "./projection.js";

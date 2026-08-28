@@ -1,17 +1,24 @@
 /**
- * App settings, plus whole-database export / import / backup.
+ * App settings, plus the backup and export controls.
  *
- * Settings live in the `settings` key/value table, not on the user row: this is
- * a single-user app and "which currency do I read totals in" is a property of
- * the app, not of a login.
+ * Settings live in the `settings` key/value table, not on a user row: this is a
+ * single-user app and "which currency do I read totals in" is a property of the
+ * app, not of a login.
  */
 
 import { Router } from "express";
-import bcrypt from "bcrypt";
+import { existsSync, statSync } from "fs";
+import { join } from "path";
 import { getDb } from "../db/init.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { ok } from "../middleware/respond.js";
-import { runBackup, listBackups } from "../services/backup.js";
+import {
+  BACKUPS_DIR, isBackupFilename, keepDaily, keepMonthly, listBackups, runBackup,
+} from "../services/backup.js";
+import {
+  buildExport, fingerprint, importExport, LEDGER_TABLES, validateExport,
+  type ExportPayload,
+} from "../services/ledgerExport.js";
 import { badRequest, HttpError } from "./_validate.js";
 
 export const settingsRouter = Router();
@@ -58,9 +65,29 @@ function readAll() {
   return out;
 }
 
+/** Newest backups, shaped for the Settings screen. */
+function backupSummary(limit = 12) {
+  const all = listBackups();
+  return {
+    total: all.length,
+    keep_daily: keepDaily(),
+    keep_monthly: keepMonthly(),
+    latest: all[0]
+      ? { ...all[0], takenAt: all[0].takenAt.toISOString() }
+      : null,
+    backups: all.slice(0, limit).map(b => ({
+      stem: b.stem,
+      db: b.db,
+      json: b.json,
+      taken_at: b.takenAt.toISOString(),
+      size_bytes: b.sizeBytes,
+    })),
+  };
+}
+
 /** GET /api/settings */
 settingsRouter.get("/", (_req, res) => {
-  ok(res, { settings: readAll(), backups: listBackups().slice(0, 10) });
+  ok(res, { settings: readAll(), backups: backupSummary() });
 });
 
 /** PATCH /api/settings — accepts any subset of the known keys. */
@@ -88,135 +115,97 @@ settingsRouter.patch("/", (req, res) => {
   ok(res, { settings: readAll(), applied });
 });
 
-/** PATCH /api/settings/password */
-settingsRouter.patch("/password", async (req, res, next) => {
+// ── backups ──────────────────────────────────────────────────────────────────
+
+/** GET /api/settings/backups — the list behind the Settings panel. */
+settingsRouter.get("/backups", (_req, res) => {
+  ok(res, backupSummary(60));
+});
+
+/** POST /api/settings/backup — the "Back up now" button. */
+settingsRouter.post("/backup", async (_req, res, next) => {
   try {
-    const db = getDb();
-    const { current_password, new_password } = req.body as {
-      current_password?: string; new_password?: string;
-    };
-    if (!current_password || !new_password) {
-      throw badRequest("current_password and new_password are required");
-    }
-    if (new_password.length < 8) throw badRequest("New password must be at least 8 characters");
-
-    const row = db.prepare("SELECT password_hash FROM users WHERE id = ?")
-      .get(req.user!.id) as { password_hash: string } | undefined;
-    if (!row) throw new HttpError("User not found", 404);
-    if (!(await bcrypt.compare(current_password, row.password_hash))) {
-      throw new HttpError("Current password is incorrect", 403);
-    }
-
-    db.prepare("UPDATE users SET password_hash = ? WHERE id = ?")
-      .run(await bcrypt.hash(new_password, 12), req.user!.id);
-    ok(res, { ok: true });
+    ok(res, { ...(await runBackup(getDb())), ...backupSummary() }, 201);
   } catch (e) {
     next(e);
   }
 });
 
-// ── whole-ledger export / import ─────────────────────────────────────────────
+/**
+ * GET /api/settings/backups/:file — download one backup file.
+ *
+ * The filename is checked against the exact pattern this server writes, so a
+ * path can never escape the backups directory.
+ */
+settingsRouter.get("/backups/:file", (req, res) => {
+  const file = req.params.file;
+  if (!isBackupFilename(file)) throw badRequest("Not a backup filename");
 
-const LEDGER_TABLES = [
-  "accounts", "holdings", "prices", "recurring_rules", "transactions",
-  "valuations", "fx_rates", "rsu_grants", "rsu_vests",
-] as const;
+  const full = join(BACKUPS_DIR, file);
+  if (!existsSync(full)) throw new HttpError("That backup is no longer on disk", 404);
+
+  res.setHeader("Content-Type", file.endsWith(".json") ? "application/json" : "application/octet-stream");
+  res.setHeader("Content-Length", String(statSync(full).size));
+  res.setHeader("Content-Disposition", `attachment; filename="${file}"`);
+  res.sendFile(full);
+});
+
+/** GET /api/settings/fingerprint — row counts and money sums, for verifying a restore. */
+settingsRouter.get("/fingerprint", (_req, res) => {
+  ok(res, { fingerprint: fingerprint(getDb()) });
+});
+
+// ── export / import ──────────────────────────────────────────────────────────
 
 /** GET /api/settings/export — a complete, re-importable JSON snapshot. */
 settingsRouter.get("/export", (_req, res) => {
-  const db = getDb();
-  const tables: Record<string, unknown[]> = {};
-  for (const t of LEDGER_TABLES) tables[t] = db.prepare(`SELECT * FROM ${t}`).all();
-
   res.setHeader("Content-Type", "application/json");
   res.setHeader(
     "Content-Disposition",
     `attachment; filename="choopi-${new Date().toISOString().slice(0, 10)}.json"`
   );
-  res.json({
-    format: "choopi-ledger",
-    schema_version: 3,
-    exported_at: new Date().toISOString(),
-    settings: readAll(),
-    tables,
-  });
+  res.json(buildExport(getDb()));
 });
 
 /**
  * POST /api/settings/import — replace the ledger with an export.
  *
- * Takes a native DB backup first, then swaps everything inside one transaction
- * with the original ids preserved, so foreign keys inside the payload stay
- * valid without any remapping pass.
+ * Takes a full backup first, so the state you are about to overwrite is on disk
+ * before a single row is deleted.
  */
 settingsRouter.post("/import", async (req, res, next) => {
   try {
     const db = getDb();
-    const payload = req.body as {
-      format?: string; tables?: Record<string, Record<string, unknown>[]>;
-      settings?: Record<string, string>;
-    };
-    if (payload?.format !== "choopi-ledger" || !payload.tables) {
-      throw badRequest("Not a Choopi ledger export");
+    const payload = req.body as ExportPayload;
+    try {
+      validateExport(payload);
+    } catch (e) {
+      throw badRequest((e as Error).message);
     }
 
     const backup = await runBackup(db);
-    const counts: Record<string, number> = {};
+    const { counts } = importExport(db, payload);
+    ok(res, { ok: true, backup: backup.dbFile, imported: counts }, 201);
+  } catch (e) {
+    next(e);
+  }
+});
 
+/** DELETE /api/settings/data — wipe the ledger, keep settings. Backs up first. */
+settingsRouter.delete("/data", async (req, res, next) => {
+  try {
+    const db = getDb();
+    if ((req.body as { confirm?: string })?.confirm !== "RESET") {
+      throw badRequest('confirm must equal "RESET"');
+    }
+    const backup = await runBackup(db);
     db.transaction(() => {
       db.pragma("foreign_keys = OFF");
-      // Children first on the way out, parents first on the way in.
       for (const t of [...LEDGER_TABLES].reverse()) db.prepare(`DELETE FROM ${t}`).run();
-
-      for (const table of LEDGER_TABLES) {
-        const rows = payload.tables![table] ?? [];
-        counts[table] = rows.length;
-        if (!rows.length) continue;
-        const cols = Object.keys(rows[0]);
-        const stmt = db.prepare(
-          `INSERT INTO ${table} (${cols.join(", ")}) VALUES (${cols.map(c => `@${c}`).join(", ")})`
-        );
-        for (const row of rows) stmt.run(row);
-      }
-
-      if (payload.settings) {
-        const write = db.prepare(
-          `INSERT INTO settings (key, value) VALUES (?, ?)
-           ON CONFLICT (key) DO UPDATE SET value = excluded.value`
-        );
-        for (const [k, v] of Object.entries(payload.settings)) {
-          if (SETTINGS[k]) write.run(k, String(v));
-        }
-      }
       db.pragma("foreign_keys = ON");
     })();
-
-    ok(res, { ok: true, backup: backup.file, imported: counts }, 201);
+    ok(res, { ok: true, backup: backup.dbFile });
   } catch (e) {
     next(e);
   }
-});
-
-/** POST /api/settings/backup — the manual backup button. */
-settingsRouter.post("/backup", async (_req, res, next) => {
-  try {
-    const result = await runBackup(getDb());
-    ok(res, { ...result, backups: listBackups().slice(0, 10) }, 201);
-  } catch (e) {
-    next(e);
-  }
-});
-
-/** DELETE /api/settings/data — wipe the ledger, keep the login and settings. */
-settingsRouter.delete("/data", (req, res) => {
-  const db = getDb();
-  if ((req.body as { confirm?: string })?.confirm !== "RESET") {
-    throw badRequest('confirm must equal "RESET"');
-  }
-  db.transaction(() => {
-    db.pragma("foreign_keys = OFF");
-    for (const t of [...LEDGER_TABLES].reverse()) db.prepare(`DELETE FROM ${t}`).run();
-    db.pragma("foreign_keys = ON");
-  })();
-  ok(res, { ok: true });
 });

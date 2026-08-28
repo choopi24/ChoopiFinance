@@ -11,13 +11,16 @@ import { getDb } from "../db/init.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { ok } from "../middleware/respond.js";
 import {
-  accountSeries, getAccount, loadLedger, summarizeAccount, today,
+  getAccount, loadLedger, summarizeAccount,
   type AccountRow,
 } from "../calc/index.js";
-import { calcOptions, RANGES, rangeDates, requestCurrency, type Range } from "./_context.js";
+import {
+  calcOptions, decomposeSeries, projectAccount, projectionQuery, RANGES,
+  requestCurrency, seriesDates, type Range,
+} from "./_context.js";
 import {
   ASSET_CLASSES, CATEGORIES, CURRENCIES, FUNDING_MODES, VALUATION_MODES,
-  absent, bool, enumOf, intParam, notFound, num, optEnumOf, optNum, optStr,
+  HttpError, absent, bool, enumOf, intParam, notFound, optNum, optStr,
   qDate, qEnum, str,
 } from "./_validate.js";
 
@@ -161,11 +164,49 @@ accountsRouter.get("/:id/series", (req, res) => {
   const range = qEnum<Range>(req, "range", RANGES, "1Y");
   const currency = requestCurrency(req, db);
   const ledger = load(true);
-  const dates = rangeDates(ledger, range, asOf);
+  const dates = seriesDates(req, ledger, asOf);
 
   ok(res, {
     range, display_currency: currency,
-    points: accountSeries(ledger, account, dates, currency, calcOptions(db)),
+    points: decomposeSeries(ledger, [account], dates, currency, calcOptions(db)),
+  });
+});
+
+/**
+ * GET /api/accounts/:id/projection?years=&annual_return_pct=
+ *
+ * This one account, compounded forward — in ITS OWN currency, because "what
+ * will my hishtalmut be worth" is a question about the fund, not about the
+ * exchange rate.
+ */
+accountsRouter.get("/:id/projection", (req, res) => {
+  const db = getDb();
+  const id = intParam(req.params.id);
+  const account = getAccount(db, id);
+  if (!account) throw notFound("Account");
+
+  const asOf = qDate(req, "as_of");
+  const q = projectionQuery(req);
+  const ledger = load(true);
+  const projected = projectAccount(db, ledger, account, q, calcOptions(db), asOf);
+  if (!projected) {
+    throw new HttpError("This account has no price or balance yet — nothing to project from", 409);
+  }
+
+  ok(res, {
+    as_of: asOf,
+    currency: account.currency,
+    assumptions: {
+      annual_return_pct: q.annualReturnPct,
+      years: q.years,
+      annual_balance_fee_pct: projected.input.annual_balance_fee_pct,
+      deposit_fee_pct: projected.input.deposit_fee_pct,
+      monthly_contribution_minor: projected.input.monthly_contribution_minor,
+      start_value_minor: projected.input.start_value_minor,
+      note: "A projection from your assumptions, not a forecast.",
+    },
+    points: projected.result.points,
+    final: projected.result.final,
   });
 });
 
@@ -197,6 +238,27 @@ accountsRouter.post("/:id/holdings", (req, res) => {
 
 export const holdingsRouter = Router();
 holdingsRouter.use(requireAuth);
+
+/**
+ * GET /api/holdings — every holding in one call, with its latest price.
+ * The quick-add sheet needs the whole list to build its picker; asking for it
+ * account-by-account would be a request per account on every open.
+ */
+holdingsRouter.get("/", (req, res) => {
+  const db = getDb();
+  const asOf = qDate(req, "as_of");
+  const holdings = db.prepare(`
+    SELECT h.*, a.name AS account_name, a.category AS account_category,
+           (SELECT p.price_minor FROM prices p
+             WHERE p.holding_id = h.id AND p.date <= ? ORDER BY p.date DESC LIMIT 1) AS last_price_minor,
+           (SELECT p.date FROM prices p
+             WHERE p.holding_id = h.id AND p.date <= ? ORDER BY p.date DESC LIMIT 1) AS last_price_date
+    FROM holdings h JOIN accounts a ON a.id = h.account_id
+    WHERE a.is_active = 1
+    ORDER BY a.name, h.symbol
+  `).all(asOf, asOf);
+  ok(res, { holdings });
+});
 
 holdingsRouter.patch("/:id", (req, res) => {
   const db = getDb();
